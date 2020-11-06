@@ -429,9 +429,12 @@ void Host_Status_f (void)
 	int			seconds;
 	int			minutes;
 	int			hours = 0;
-	int			j;
+	int			j, i;
 
-	if (cmd_source == src_command)
+	qhostaddr_t addresses[32];
+	int numaddresses;
+
+	if (cmd_source != src_client)
 	{
 		if (!sv.active)
 		{
@@ -443,10 +446,21 @@ void Host_Status_f (void)
 	else
 		print_fn = SV_ClientPrintf;
 
-	print_fn ("host:    %s\n", Cvar_VariableString ("hostname"));
-	print_fn ("version: %4.2f\n", VERSION);
-	if (tcpipAvailable)
-		print_fn ("tcp/ip:  %s\n", my_tcpip_address);
+	print_fn (    "host:    %s\n", Cvar_VariableString ("hostname"));
+	print_fn (    "version: "ENGINE_NAME_AND_VER"\n");
+
+	numaddresses = NET_ListAddresses(addresses, sizeof(addresses)/sizeof(addresses[0]));
+	for (i = 0; i < numaddresses; i++)
+	{
+		if (*addresses[i] == '[')
+			print_fn ("ipv6:    %s\n", addresses[i]);	//Spike -- FIXME: we should really have ports displayed here or something
+		else
+			print_fn ("tcp/ip:  %s\n", addresses[i]);	//Spike -- FIXME: we should really have ports displayed here or something
+	}
+	if (ipv4Available)
+		print_fn ("tcp/ip:  %s\n", my_ipv4_address);	//Spike -- FIXME: we should really have ports displayed here or something
+	if (ipv6Available)
+		print_fn ("ipv6:    %s\n", my_ipv6_address);
 	if (ipxAvailable)
 		print_fn ("ipx:     %s\n", my_ipx_address);
 	print_fn ("map:     %s\n", sv.name);
@@ -455,7 +469,10 @@ void Host_Status_f (void)
 	{
 		if (!client->active)
 			continue;
-		seconds = (int)(net_time - NET_QSocketGetTime(client->netconnection));
+		if (client->netconnection)
+			seconds = (int)(net_time - NET_QSocketGetTime(client->netconnection));
+		else
+			seconds = 0;
 		minutes = seconds / 60;
 		if (minutes)
 		{
@@ -467,7 +484,10 @@ void Host_Status_f (void)
 		else
 			hours = 0;
 		print_fn ("#%-2u %-16.16s  %3i  %2i:%02i:%02i\n", j+1, client->name, (int)client->edict->v.frags, hours, minutes, seconds);
-		print_fn ("   %s\n", NET_QSocketGetAddressString(client->netconnection));
+		if (cmd_source != src_client)
+			print_fn ("   %s\n", client->netconnection?NET_QSocketGetTrueAddressString(client->netconnection):"botclient");
+		else
+			print_fn ("   %s\n", client->netconnection?NET_QSocketGetMaskedAddressString(client->netconnection):"botclient");
 	}
 }
 

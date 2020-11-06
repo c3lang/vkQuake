@@ -71,22 +71,21 @@ const char *svc_strings[] =
 	"svc_sellscreen",
 	"svc_cutscene",
 //johnfitz -- new server messages
-	"",	// 35
-	"",	// 36
-	"svc_skybox", // 37					// [string] skyname
-	"", // 38
-	"", // 39
-	"svc_bf", // 40						// no data
-	"svc_fog", // 41					// [byte] density [byte] red [byte] green [byte] blue [float] time
-	"svc_spawnbaseline2", //42			// support for large modelindex, large framenum, alpha, using flags
-	"svc_spawnstatic2", // 43			// support for large modelindex, large framenum, alpha, using flags
-	"svc_spawnstaticsound2", //	44		// [coord3] [short] samp [byte] vol [byte] aten
-	"", // 44
-	"", // 45
-	"", // 46
-	"", // 47
-	"", // 48
-	"", // 49
+	"35",	// 35
+	"36",	// 36
+	"svc_skybox_fitz", // 37					// [string] skyname
+	"38", // 38
+	"39", // 39
+	"svc_bf_fitz", // 40						// no data
+	"svc_fog_fitz", // 41					// [byte] density [byte] red [byte] green [byte] blue [float] time
+	"svc_spawnbaseline2_fitz", //42			// support for large modelindex, large framenum, alpha, using flags
+	"svc_spawnstatic2_fitz", // 43			// support for large modelindex, large framenum, alpha, using flags
+	"svc_spawnstaticsound2_fitz", //	44		// [coord3] [short] samp [byte] vol [byte] aten
+	"45", // 45
+	"46", // 46
+	"47", // 47
+	"48", // 48
+	"49", // 49
 //johnfitz
 };
 
@@ -1163,7 +1162,7 @@ static void CL_ParseUpdate (int bits)
 		{
 			float a, b;
 
-			if (warn_about_nehahra_protocol)
+			if (cl.protocol == PROTOCOL_NETQUAKE && warn_about_nehahra_protocol)
 			{
 				Con_Warning ("nonstandard update bit, assuming Nehahra protocol\n");
 				warn_about_nehahra_protocol = false;
@@ -1218,7 +1217,7 @@ static void CL_ParseUpdate (int bits)
 CL_ParseBaseline
 ==================
 */
-void CL_ParseBaseline (entity_t *ent, int version) //johnfitz -- added argument
+static void CL_ParseBaseline (entity_t *ent, int version) //johnfitz -- added argument
 {
 	int	i;
 	int bits; //johnfitz
@@ -1241,6 +1240,7 @@ void CL_ParseBaseline (entity_t *ent, int version) //johnfitz -- added argument
 }
 
 
+#define CL_SetStati(stat, val) cl.statsf[stat] = (cl.stats[stat] = val)
 /*
 ==================
 CL_ParseClientdata
@@ -1248,7 +1248,7 @@ CL_ParseClientdata
 Server information pertaining to this client only
 ==================
 */
-void CL_ParseClientdata (void)
+static void CL_ParseClientdata (void)
 {
 	int		i, j;
 	int		bits; //johnfitz
@@ -1294,8 +1294,8 @@ void CL_ParseClientdata (void)
 	}
 	//johnfitz
 
-// [always sent]	if (bits & SU_ITEMS)
-		i = MSG_ReadLong ();
+	if (bits & SU_ITEMS)
+		CL_SetStati(STAT_ITEMS, MSG_ReadLong ());
 
 	if (cl.items != i)
 	{	// set flash times
@@ -1414,7 +1414,7 @@ void CL_ParseClientdata (void)
 CL_NewTranslation
 =====================
 */
-void CL_NewTranslation (int slot)
+static void CL_NewTranslation (int slot)
 {
 	int		i, j;
 	int		top, bottom;
@@ -1604,7 +1604,7 @@ void CL_ParseServerMessage (void)
 		switch (cmd)
 		{
 		default:
-			Host_Error ("Illegible server message, previous was %s", svc_strings[lastcmd]); //johnfitz -- added svc_strings[lastcmd]
+			Host_Error ("Illegible server message %s, previous was %s", svc_strings[cmd], svc_strings[lastcmd]); //johnfitz -- added svc_strings[lastcmd]
 			break;
 
 		case svc_nop:
@@ -1785,9 +1785,7 @@ void CL_ParseServerMessage (void)
 
 		case svc_updatestat:
 			i = MSG_ReadByte ();
-			if (i < 0 || i >= MAX_CL_STATS)
-				Sys_Error ("svc_updatestat: %i is invalid", i);
-			cl.stats[i] = MSG_ReadLong ();;
+			CL_ParseStatInt(i, MSG_ReadLong());
 			break;
 
 		case svc_spawnstaticsound:

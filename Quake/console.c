@@ -53,6 +53,8 @@ cvar_t		con_notifytime = {"con_notifytime","3",CVAR_NONE};	//seconds
 cvar_t		con_logcenterprint = {"con_logcenterprint", "1", CVAR_NONE}; //johnfitz
 
 char		con_lastcenterstring[1024]; //johnfitz
+void (*con_redirect_flush)(const char *buffer);	//call this to flush the redirection buffer (for rcon)
+char con_redirect_buffer[8192];
 
 #define	NUM_CON_TIMES 4
 float		con_times[NUM_CON_TIMES];	// realtime time the line was generated
@@ -489,6 +491,8 @@ void Con_Printf (const char *fmt, ...)
 	q_vsnprintf (msg, sizeof(msg), fmt, argptr);
 	va_end (argptr);
 
+	if (con_redirect_flush)
+		q_strlcat(con_redirect_buffer, msg, sizeof(con_redirect_buffer));
 // also echo to debugging console
 	Sys_Printf ("%s", msg);
 
@@ -533,15 +537,17 @@ void Con_DWarning (const char *fmt, ...)
 	va_list		argptr;
 	char		msg[MAXPRINTMSG];
 
-	if (!developer.value)
-		return;			// don't confuse non-developers with techie stuff...
+	if (developer.value >= 2)
+	{	// don't confuse non-developers with techie stuff...
+		// (this is limit exceeded warnings)
 
-	va_start (argptr, fmt);
-	q_vsnprintf (msg, sizeof(msg), fmt, argptr);
-	va_end (argptr);
+		va_start (argptr, fmt);
+		q_vsnprintf (msg, sizeof(msg), fmt, argptr);
+		va_end (argptr);
 
-	Con_SafePrintf ("\x02Warning: ");
-	Con_Printf ("%s", msg);
+		Con_SafePrintf ("\x02Warning: ");
+		Con_Printf ("%s", msg);
+	}
 }
 
 /*
@@ -693,6 +699,18 @@ void Con_LogCenterPrint (const char *str)
 		Con_Printf ("%s", Con_Quakebar(40));
 		Con_ClearNotify ();
 	}
+}
+
+qboolean Con_IsRedirected(void)
+{
+	return !!con_redirect_flush;
+}
+void Con_Redirect(void(*flush)(const char *))
+{
+	if (con_redirect_flush)
+		con_redirect_flush(con_redirect_buffer);
+	*con_redirect_buffer = 0;
+	con_redirect_flush = flush;
 }
 
 /*

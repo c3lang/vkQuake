@@ -79,14 +79,16 @@ typedef struct
 
 
 #define	NUM_PING_TIMES		16
-#define	NUM_SPAWN_PARMS		16
+#define	NUM_BASIC_SPAWN_PARMS		16
+#define	NUM_TOTAL_SPAWN_PARMS		64
 
 typedef struct client_s
 {
 	qboolean		active;				// false = client is free
-	qboolean		spawned;			// false = don't send datagrams
+	qboolean		spawned;			// false = don't send datagrams (set when client acked the first entities)
 	qboolean		dropasap;			// has been told to go to another level
-	qboolean		sendsignon;			// only valid before spawned
+	int				sendsignon;			// only valid before spawned
+	int				signonidx;
 
 	double			last_message;		// reliable messages must be sent
 										// periodically
@@ -107,11 +109,13 @@ typedef struct client_s
 	int				num_pings;			// ping_times[num_pings%NUM_PING_TIMES]
 
 // spawn parms are carried from level to level
-	float			spawn_parms[NUM_SPAWN_PARMS];
+	float			spawn_parms[NUM_TOTAL_SPAWN_PARMS];
 
 // client known data for deltas
 	int				old_frags;
 
+	sizebuf_t		datagram;
+	byte			datagram_buf[MAX_DATAGRAM];
 	qboolean		pextknown;
 	unsigned int	protocol_pext2;
 	unsigned int	resendstatsnum[MAX_CL_STATS/32];	//the stats which need to be resent.
@@ -270,6 +274,7 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg);
 
 void SV_MoveToGoal (void);
 
+void SV_ConnectClient (int clientnum);	//called from the netcode to add new clients. also called from pr_ext to spawn new botclients.
 void SV_CheckForNewClients (void);
 void SV_RunClients (void);
 void SV_SaveSpawnparms ();

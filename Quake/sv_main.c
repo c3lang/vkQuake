@@ -1141,11 +1141,14 @@ void SV_ConnectClient (int clientnum)
 	int				edictnum;
 	struct qsocket_s *netconnection;
 	int				i;
-	float			spawn_parms[NUM_SPAWN_PARMS];
+	float			spawn_parms[NUM_TOTAL_SPAWN_PARMS];
 
 	client = svs.clients + clientnum;
 
-	Con_DPrintf ("Client %s connected\n", NET_QSocketGetAddressString(client->netconnection));
+	if (client->netconnection)
+		Con_DPrintf ("Client %s connected\n", NET_QSocketGetTrueAddressString(client->netconnection));
+	else
+		Con_DPrintf ("Bot connected\n");
 
 	edictnum = clientnum+1;
 
@@ -1153,6 +1156,7 @@ void SV_ConnectClient (int clientnum)
 
 // set up the client_t
 	netconnection = client->netconnection;
+	net_activeconnections++;
 
 	if (sv.loadgame)
 		memcpy (spawn_parms, client->spawn_parms, sizeof(spawn_parms));
@@ -1166,6 +1170,10 @@ void SV_ConnectClient (int clientnum)
 	client->message.data = client->msgbuf;
 	client->message.maxsize = sizeof(client->msgbuf);
 	client->message.allowoverflow = true;		// we can catch it
+
+	client->datagram.data = client->datagram_buf;
+	client->datagram.maxsize = sizeof(client->datagram_buf);
+	client->datagram.allowoverflow = true;		//simply ignored on overflow
 
 	client->pextknown = false;
 	client->protocol_pext2 = 0;
@@ -1215,8 +1223,6 @@ void SV_CheckForNewClients (void)
 
 		svs.clients[i].netconnection = ret;
 		SV_ConnectClient (i);
-
-		net_activeconnections++;
 	}
 }
 
@@ -1325,7 +1331,7 @@ qboolean SV_VisibleToClient (edict_t *client, edict_t *test, qmodel_t *worldmode
 {
 	byte	*pvs;
 	vec3_t	org;
-	int		i;
+	unsigned int		i;
 
 	VectorAdd (client->v.origin, client->v.view_ofs, org);
 	pvs = SV_FatPVS (org, worldmodel);
@@ -1903,11 +1909,8 @@ void SV_SendClientMessages (void)
 		if (!host_client->active)
 			continue;
 
-		if (host_client->spawned)
-		{
-			if (!SV_SendClientDatagram (host_client))
-				continue;
-		}
+		if (!SV_SendClientDatagram (host_client))
+			continue;
 		else
 		{
 		// the player isn't totally in the game yet
