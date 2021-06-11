@@ -70,7 +70,7 @@ static void Sys_InitSDL (void)
 	atexit(Sys_AtExit);
 }
 
-#define DEFAULT_MEMORY (256 * 1024 * 1024) // ericw -- was 72MB (64-bit) / 64MB (32-bit)
+#define DEFAULT_MEMORY (384 * 1024 * 1024) // ericw -- was 72MB (64-bit) / 64MB (32-bit)
 
 static quakeparms_t	parms;
 
@@ -152,9 +152,6 @@ int main(int argc, char *argv[])
 		time = newtime - oldtime;
 
 		Host_Frame (time);
-
-		if (time < sys_throttle.value && !cls.timedemo)
-			SDL_Delay(1);
 
 		oldtime = newtime;
 	}

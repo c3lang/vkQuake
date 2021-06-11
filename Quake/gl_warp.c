@@ -29,8 +29,6 @@ cvar_t r_waterquality = {"r_waterquality", "8", CVAR_NONE};
 cvar_t r_waterwarp = {"r_waterwarp", "1", CVAR_ARCHIVE};
 cvar_t r_waterwarpcompute = { "r_waterwarpcompute", "1", CVAR_ARCHIVE };
 
-float load_subdivide_size; //johnfitz -- remember what subdivide_size value was when this map was loaded
-
 float	turbsin[] =
 {
 #include "gl_warp_sin.h"
@@ -197,7 +195,10 @@ static void R_RasterWarpTexture(texture_t *tx, float warptess) {
 	//render warp
 	GL_SetCanvas(CANVAS_WARPIMAGE);
 	R_BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.raster_tex_warp_pipeline);
-	vkCmdBindDescriptorSets(vulkan_globals.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.basic_pipeline_layout.handle, 0, 1, &tx->gltexture->descriptor_set, 0, NULL);
+	if (!r_lightmap_cheatsafe)
+		vkCmdBindDescriptorSets(vulkan_globals.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.basic_pipeline_layout.handle, 0, 1, &tx->gltexture->descriptor_set, 0, NULL);
+	else
+		vkCmdBindDescriptorSets(vulkan_globals.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.basic_pipeline_layout.handle, 0, 1, &whitetexture->descriptor_set, 0, NULL);
 
 	int num_verts = 0;
 	for (y = 0.0; y<128.01; y += warptess) // .01 for rounding errors
@@ -252,6 +253,8 @@ static void R_ComputeWarpTexture(texture_t *tx, float warptess) {
 	const float time = cl.time;
 	R_BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, vulkan_globals.cs_tex_warp_pipeline);
 	VkDescriptorSet sets[2] = { tx->gltexture->descriptor_set, tx->warpimage->warp_write_descriptor_set };
+	if (r_lightmap_cheatsafe)
+		sets[0] = whitetexture->descriptor_set;
 	vkCmdBindDescriptorSets(vulkan_globals.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkan_globals.cs_tex_warp_pipeline.layout.handle, 0, 2, sets, 0, NULL);
 	R_PushConstants(VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float), &time);
 	vkCmdDispatch(vulkan_globals.command_buffer, WARPIMAGESIZE / 8, WARPIMAGESIZE / 8, 1);
@@ -273,7 +276,7 @@ void R_UpdateWarpTextures (void)
 	int i, mip;
 	float warptess;
 
-	if (cl.paused || r_drawflat_cheatsafe || r_lightmap_cheatsafe)
+	if (cl.paused)
 		return;
 
 	warptess = 128.0/CLAMP (3.0, floor(r_waterquality.value), 64.0);

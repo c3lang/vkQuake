@@ -140,8 +140,6 @@ typedef struct glpoly_s
 typedef struct msurface_s
 {
 	int			visframe;		// should be drawn when node is crossed
-	float		mins[3];		// johnfitz -- for frustum culling
-	float		maxs[3];		// johnfitz -- for frustum culling
 
 	mplane_t	*plane;
 	int			flags;
@@ -207,7 +205,7 @@ typedef struct mleaf_s
 	byte		*compressed_vis;
 	efrag_t		*efrags;
 
-	msurface_t	**firstmarksurface;
+	int			*firstmarksurface;
 	int			nummarksurfaces;
 	int			key;			// BSP sequence number for leaf's contents
 	byte		ambient_sound_level[NUM_AMBIENTS];
@@ -231,6 +229,9 @@ typedef struct
 	vec3_t		clip_mins;
 	vec3_t		clip_maxs;
 } hull_t;
+
+typedef float soa_aabb_t[2 * 3 * 8]; // 8 AABB's in SoA form
+typedef float soa_plane_t[4 * 8]; // 8 planes in SoA form
 
 /*
 ==============================================================================
@@ -400,7 +401,6 @@ typedef enum {mod_brush, mod_sprite, mod_alias} modtype_t;
 
 //johnfitz -- extra flags for rendering
 #define	MOD_NOLERP		256		//don't lerp when animating
-#define	MOD_NOSHADOW	512		//don't cast a shadow
 #define	MOD_FBRIGHTHACK	1024	//when fullbrights are disabled, use a hack to render this model brighter
 //johnfitz
 
@@ -470,7 +470,11 @@ typedef struct qmodel_s
 	mclipnode_t	*clipnodes; //johnfitz -- was dclipnode_t
 
 	int			nummarksurfaces;
-	msurface_t	**marksurfaces;
+	int			*marksurfaces;
+
+	soa_aabb_t	*soa_leafbounds;
+	byte		*surfvis;
+	soa_plane_t	*soa_surfplanes;
 
 	hull_t		hulls[MAX_MAP_HULLS];
 

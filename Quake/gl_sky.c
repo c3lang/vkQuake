@@ -981,8 +981,7 @@ void Sky_DrawSky (void)
 {
 	int				i;
 
-	//in these special render modes, the sky faces are handled in the normal world/brush renderer
-	if (r_drawflat_cheatsafe || r_lightmap_cheatsafe )
+	if (r_lightmap_cheatsafe)
 		return;
 
 	//

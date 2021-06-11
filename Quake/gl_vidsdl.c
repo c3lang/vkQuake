@@ -60,6 +60,8 @@ static vmode_t	modelist[MAX_MODE_LIST];
 static int		nummodes;
 
 static qboolean	vid_initialized = false;
+static qboolean has_focus = true;
+static int num_images_acquired = 0;
 
 static SDL_Window	*draw_context;
 static SDL_SysWMinfo sys_wm_info;
@@ -82,6 +84,7 @@ static void GL_DestroyRenderResources(void);
 viddef_t	vid;				// global video state
 modestate_t	modestate = MS_UNINIT;
 extern qboolean scr_initialized;
+extern cvar_t r_particles;
 
 //====================================
 
@@ -146,7 +149,7 @@ static PFN_vkDestroySwapchainKHR fpDestroySwapchainKHR;
 static PFN_vkGetSwapchainImagesKHR fpGetSwapchainImagesKHR;
 static PFN_vkAcquireNextImageKHR fpAcquireNextImageKHR;
 static PFN_vkQueuePresentKHR fpQueuePresentKHR;
-#ifdef _WIN32
+#if defined(VK_EXT_full_screen_exclusive)
 static PFN_vkAcquireFullScreenExclusiveModeEXT fpAcquireFullScreenExclusiveModeEXT;
 static PFN_vkReleaseFullScreenExclusiveModeEXT fpReleaseFullScreenExclusiveModeEXT;
 #endif
@@ -519,7 +522,7 @@ static void VID_Test (void)
 	old_height = VID_GetCurrentHeight();
 	old_refreshrate = VID_GetCurrentRefreshRate();
 	old_bpp = VID_GetCurrentBPP();
-	old_fullscreen = VID_GetFullscreen() ? true : false;
+	old_fullscreen = VID_GetFullscreen() ? (vulkan_globals.swap_chain_full_screen_exclusive ? 2 : 1) : 0;
 
 	VID_Restart ();
 
@@ -531,7 +534,7 @@ static void VID_Test (void)
 		Cvar_SetValueQuick (&vid_height, old_height);
 		Cvar_SetValueQuick (&vid_refreshrate, old_refreshrate);
 		Cvar_SetValueQuick (&vid_bpp, old_bpp);
-		Cvar_SetQuick (&vid_fullscreen, old_fullscreen ? "1" : "0");
+		Cvar_SetValueQuick (&vid_fullscreen, old_fullscreen);
 		VID_Restart ();
 	}
 }
@@ -749,6 +752,24 @@ static void GL_InitDevice( void )
 
 	vkGetPhysicalDeviceMemoryProperties(vulkan_physical_device, &vulkan_globals.memory_properties);
 
+	vkGetPhysicalDeviceProperties(vulkan_physical_device, &vulkan_globals.device_properties);
+	switch(vulkan_globals.device_properties.vendorID)
+	{
+	case 0x8086:
+		Con_Printf("Vendor: Intel\n");
+		break;
+	case 0x10DE:
+		Con_Printf("Vendor: NVIDIA\n");
+		break;
+	case 0x1002:
+		Con_Printf("Vendor: AMD\n");
+		break;
+	default:
+		Con_Printf("Vendor: Unknown (0x%x)\n", vulkan_globals.device_properties.vendorID);
+	}
+
+	Con_Printf("Device: %s\n", vulkan_globals.device_properties.deviceName);
+
 	uint32_t device_extension_count;
 	err = vkEnumerateDeviceExtensionProperties(vulkan_physical_device, NULL, &device_extension_count, NULL);
 
@@ -767,8 +788,9 @@ static void GL_InitDevice( void )
 #endif
 			if (strcmp(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME, device_extensions[i].extensionName) == 0)
 				vulkan_globals.dedicated_allocation = true;
-#if defined(_WIN32)
-			if ((strcmp(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME, device_extensions[i].extensionName) == 0))
+#if defined(VK_EXT_full_screen_exclusive)
+			// Only enable on NVIDIA for now. Some people report issues with the mouse cursor on AMD hardware.
+			if (strcmp(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME, device_extensions[i].extensionName) == 0)
 				vulkan_globals.full_screen_exclusive = true;
 #endif
 		}
@@ -778,24 +800,6 @@ static void GL_InitDevice( void )
 
 	if(!found_swapchain_extension)
 		Sys_Error("Couldn't find %s extension", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-
-	vkGetPhysicalDeviceProperties(vulkan_physical_device, &vulkan_globals.device_properties);
-	switch(vulkan_globals.device_properties.vendorID)
-	{
-	case 0x8086:
-		Con_Printf("Vendor: Intel\n");
-		break;
-	case 0x10DE:
-		Con_Printf("Vendor: NVIDIA\n");
-		break;
-	case 0x1002:
-		Con_Printf("Vendor: AMD\n");
-		break;
-	default:
-		Con_Printf("Vendor: Unknown (0x%x)\n", vulkan_globals.device_properties.vendorID);
-	}
-
-	Con_Printf("Device: %s\n", vulkan_globals.device_properties.deviceName);
 
 	qboolean found_graphics_queue = false;
 
@@ -848,7 +852,7 @@ static void GL_InitDevice( void )
 		device_extensions[ numEnabledExtensions++ ] = VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME;
 		device_extensions[ numEnabledExtensions++ ] = VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME;
 	}
-#ifdef _WIN32
+#if defined(VK_EXT_full_screen_exclusive)
 	if (vulkan_globals.full_screen_exclusive) {
 		device_extensions[ numEnabledExtensions++ ] = VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME;
 	}
@@ -898,7 +902,7 @@ static void GL_InitDevice( void )
 	{
 		Con_Printf("Using VK_KHR_dedicated_allocation\n");
 	}
-#ifdef _WIN32
+#if defined(VK_EXT_full_screen_exclusive)
 	if (vulkan_globals.full_screen_exclusive)
 	{
 		Con_Printf("Using VK_EXT_full_screen_exclusive\n");
@@ -1018,7 +1022,7 @@ GL_CreateRenderPasses
 */
 static void GL_CreateRenderPasses()
 {
-	Con_Printf("Creating render passes\n");
+	Sys_Printf("Creating render passes\n");
 
 	VkResult err;
 
@@ -1188,7 +1192,7 @@ GL_CreateDepthBuffer
 */
 static void GL_CreateDepthBuffer( void )
 {
-	Con_Printf("Creating depth buffer\n");
+	Sys_Printf("Creating depth buffer\n");
 
 	if(depth_buffer != VK_NULL_HANDLE)
 		return;
@@ -1277,7 +1281,7 @@ static void GL_CreateColorBuffer( void )
 	VkResult err;
 	int i;
 
-	Con_Printf("Creating color buffer\n");
+	Sys_Printf("Creating color buffer\n");
 
 	VkImageCreateInfo image_create_info;
 	memset(&image_create_info, 0, sizeof(image_create_info));
@@ -1375,16 +1379,16 @@ static void GL_CreateColorBuffer( void )
 		switch(vulkan_globals.sample_count)
 		{
 			case VK_SAMPLE_COUNT_2_BIT:
-				Con_Printf("2 AA Samples\n");
+				Sys_Printf("2 AA Samples\n");
 				break;
 			case VK_SAMPLE_COUNT_4_BIT:
-				Con_Printf("4 AA Samples\n");
+				Sys_Printf("4 AA Samples\n");
 				break;
 			case VK_SAMPLE_COUNT_8_BIT:
-				Con_Printf("8 AA Samples\n");
+				Sys_Printf("8 AA Samples\n");
 				break;
 			case VK_SAMPLE_COUNT_16_BIT:
-				Con_Printf("16 AA Samples\n");
+				Sys_Printf("16 AA Samples\n");
 				break;
 			default:
 				break;
@@ -1396,7 +1400,7 @@ static void GL_CreateColorBuffer( void )
 		vulkan_globals.supersampling = (vulkan_physical_device_features.sampleRateShading && vid_fsaamode.value >= 1) ? true : false;
 
 		if (vulkan_globals.supersampling)
-			Con_Printf("Supersampling enabled\n");
+			Sys_Printf("Supersampling enabled\n");
 
 		image_create_info.samples = vulkan_globals.sample_count;
 		image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -1456,7 +1460,7 @@ static void GL_CreateColorBuffer( void )
 			Sys_Error("vkCreateImageView failed");
 	}
 	else
-		Con_Printf("AA disabled\n");
+		Sys_Printf("AA disabled\n");
 }
 
 /*
@@ -1466,15 +1470,8 @@ GL_CreateDescriptorSets
 */
 static void GL_CreateDescriptorSets(void)
 {
-	VkDescriptorSetAllocateInfo descriptor_set_allocate_info;
-	memset(&descriptor_set_allocate_info, 0, sizeof(descriptor_set_allocate_info));
-	descriptor_set_allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	descriptor_set_allocate_info.descriptorPool = vulkan_globals.descriptor_pool;
-	descriptor_set_allocate_info.descriptorSetCount = 1;
-	descriptor_set_allocate_info.pSetLayouts = &vulkan_globals.input_attachment_set_layout;
-
 	assert(postprocess_descriptor_set == VK_NULL_HANDLE);
-	vkAllocateDescriptorSets(vulkan_globals.device, &descriptor_set_allocate_info, &postprocess_descriptor_set);
+	postprocess_descriptor_set = R_AllocateDescriptorSet(&vulkan_globals.input_attachment_set_layout);
 
 	VkDescriptorImageInfo image_info;
 	memset(&image_info, 0, sizeof(image_info));
@@ -1492,14 +1489,8 @@ static void GL_CreateDescriptorSets(void)
 	input_attachment_write.pImageInfo = &image_info;
 	vkUpdateDescriptorSets(vulkan_globals.device, 1, &input_attachment_write, 0, NULL);
 
-	memset(&descriptor_set_allocate_info, 0, sizeof(descriptor_set_allocate_info));
-	descriptor_set_allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	descriptor_set_allocate_info.descriptorPool = vulkan_globals.descriptor_pool;
-	descriptor_set_allocate_info.descriptorSetCount = 1;
-	descriptor_set_allocate_info.pSetLayouts = &vulkan_globals.screen_warp_set_layout;
-
 	assert(vulkan_globals.screen_warp_desc_set == VK_NULL_HANDLE);
-	vkAllocateDescriptorSets(vulkan_globals.device, &descriptor_set_allocate_info, &vulkan_globals.screen_warp_desc_set);
+	vulkan_globals.screen_warp_desc_set = R_AllocateDescriptorSet(&vulkan_globals.screen_warp_set_layout);
 
 	VkDescriptorImageInfo input_image_info;
 	memset(&input_image_info, 0, sizeof(input_image_info));
@@ -1542,9 +1533,9 @@ static qboolean GL_CreateSwapChain( void )
 	uint32_t i;
 	VkResult err;
 
-#ifdef _WIN32
+#if defined(VK_EXT_full_screen_exclusive)
 	qboolean use_exclusive_full_screen = false;
-	qboolean try_use_exclusive_full_screen = vulkan_globals.full_screen_exclusive && VID_GetFullscreen();
+	qboolean try_use_exclusive_full_screen = vulkan_globals.full_screen_exclusive && vulkan_globals.want_full_screen_exclusive && has_focus && VID_GetFullscreen();
 	VkSurfaceFullScreenExclusiveInfoEXT full_screen_exclusive_info;
 	VkSurfaceFullScreenExclusiveWin32InfoEXT full_screen_exclusive_win32_info;
 	if (try_use_exclusive_full_screen)
@@ -1672,13 +1663,13 @@ static qboolean GL_CreateSwapChain( void )
 
 	switch(present_mode) {
 	case VK_PRESENT_MODE_FIFO_KHR:
-		Con_Printf("Using FIFO present mode\n");
+		Sys_Printf("Using FIFO present mode\n");
 		break;
 	case VK_PRESENT_MODE_MAILBOX_KHR:
-		Con_Printf("Using MAILBOX present mode\n");
+		Sys_Printf("Using MAILBOX present mode\n");
 		break;
 	case VK_PRESENT_MODE_IMMEDIATE_KHR:
-		Con_Printf("Using IMMEDIATE present mode\n");
+		Sys_Printf("Using IMMEDIATE present mode\n");
 		break;
 	default:
 		break;
@@ -1710,7 +1701,7 @@ static qboolean GL_CreateSwapChain( void )
 	vulkan_globals.swap_chain_full_screen_exclusive = false;
 	vulkan_globals.swap_chain_full_screen_acquired = false;
 
-#ifdef _WIN32
+#if defined(VK_EXT_full_screen_exclusive)
 	if (use_exclusive_full_screen) {
 		swapchain_create_info.pNext = &full_screen_exclusive_info;
 		vulkan_globals.swap_chain_full_screen_exclusive = true;
@@ -1722,8 +1713,21 @@ static qboolean GL_CreateSwapChain( void )
 
 	assert(vulkan_swapchain == VK_NULL_HANDLE);
 	err = fpCreateSwapchainKHR(vulkan_globals.device, &swapchain_create_info, NULL, &vulkan_swapchain);
-	if (err != VK_SUCCESS)
-		Sys_Error("Couldn't create swap chain");
+	if (err != VK_SUCCESS) {
+#if defined(VK_EXT_full_screen_exclusive)
+		if (use_exclusive_full_screen) {
+			// At least one person reported that a driver fails to create the swap chain even though it advertises full screen exclusivity
+			swapchain_create_info.pNext = NULL;
+			vulkan_globals.swap_chain_full_screen_exclusive = false;
+			use_exclusive_full_screen = false;
+			err = fpCreateSwapchainKHR(vulkan_globals.device, &swapchain_create_info, NULL, &vulkan_swapchain);
+		}
+#endif
+		if (err != VK_SUCCESS) {
+			Sys_Error("Couldn't create swap chain");
+		}
+	}
+	num_images_acquired = 0;
 
 	for (i = 0; i < num_swap_chain_images; ++i)
 		assert(swapchain_images[i] == VK_NULL_HANDLE);
@@ -1786,7 +1790,7 @@ static void GL_CreateFrameBuffers( void )
 {
 	uint32_t i;
 
-	Con_Printf("Creating frame buffers\n");
+	Sys_Printf("Creating frame buffers\n");
 
 	VkResult err;
 
@@ -1874,10 +1878,10 @@ static void GL_DestroyRenderResources( void )
 
 	R_DestroyPipelines();
 
-	vkFreeDescriptorSets(vulkan_globals.device, vulkan_globals.descriptor_pool, 1, &postprocess_descriptor_set);
+	R_FreeDescriptorSet(postprocess_descriptor_set, &vulkan_globals.input_attachment_set_layout);
 	postprocess_descriptor_set = VK_NULL_HANDLE;
 
-	vkFreeDescriptorSets(vulkan_globals.device, vulkan_globals.descriptor_pool, 1, &vulkan_globals.screen_warp_desc_set);
+	R_FreeDescriptorSet(vulkan_globals.screen_warp_desc_set, &vulkan_globals.screen_warp_set_layout);
 	vulkan_globals.screen_warp_desc_set = VK_NULL_HANDLE;
 
 	if (msaa_color_buffer)
@@ -2036,7 +2040,7 @@ qboolean GL_BeginRendering (int *x, int *y, int *width, int *height)
 
 	vkCmdSetViewport(vulkan_globals.command_buffer, 0, 1, &viewport);
 
-	R_BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.basic_blend_pipeline[0]);
+	R_BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.basic_blend_pipeline[render_pass_index]);
 	GL_SetCanvas(CANVAS_NONE);
 
 	return true;
@@ -2049,27 +2053,35 @@ GL_AcquireNextSwapChainImage
 */
 qboolean GL_AcquireNextSwapChainImage(void)
 {
-#ifdef _WIN32
-	if ((vid_desktopfullscreen.value == 0) && VID_GetFullscreen() && vulkan_globals.swap_chain_full_screen_exclusive && !vulkan_globals.swap_chain_full_screen_acquired)
+	if (num_images_acquired >= (num_swap_chain_images - 1)) {
+		return false;
+	}
+
+#if defined(VK_EXT_full_screen_exclusive)
+	if (VID_GetFullscreen() && vulkan_globals.want_full_screen_exclusive && vulkan_globals.swap_chain_full_screen_exclusive && !vulkan_globals.swap_chain_full_screen_acquired)
 	{
 		const VkResult result = fpAcquireFullScreenExclusiveModeEXT(vulkan_globals.device, vulkan_swapchain);
 		if (result == VK_SUCCESS) {
 			vulkan_globals.swap_chain_full_screen_acquired = true;
-			Con_Printf("Full screen exclusive acquired\n");
+			Sys_Printf("Full screen exclusive acquired\n");
 		}
 	}
-	else if ((vid_desktopfullscreen.value != 0) && vulkan_globals.swap_chain_full_screen_acquired)
+	else if (!vulkan_globals.want_full_screen_exclusive  && vulkan_globals.swap_chain_full_screen_exclusive && vulkan_globals.swap_chain_full_screen_acquired)
 	{
 		const VkResult result = fpReleaseFullScreenExclusiveModeEXT(vulkan_globals.device, vulkan_swapchain);
 		if (result == VK_SUCCESS) {
-			vulkan_globals.swap_chain_full_screen_acquired = true;
-			Con_Printf("Full screen exclusive released\n");
+			vulkan_globals.swap_chain_full_screen_acquired = false;
+			Sys_Printf("Full screen exclusive released\n");
 		}
 	}
 #endif
 
 	VkResult err = fpAcquireNextImageKHR(vulkan_globals.device, vulkan_swapchain, UINT64_MAX, image_aquired_semaphores[current_command_buffer], VK_NULL_HANDLE, &current_swapchain_buffer);
+#if defined(VK_EXT_full_screen_exclusive)
 	if ((err == VK_ERROR_OUT_OF_DATE_KHR) || (err == VK_ERROR_SURFACE_LOST_KHR) || (err == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT))
+#else
+	if ((err == VK_ERROR_OUT_OF_DATE_KHR) || (err == VK_ERROR_SURFACE_LOST_KHR))
+#endif
 	{
 		vid_changed = true;
 		Cbuf_AddText ("vid_restart\n");
@@ -2082,6 +2094,8 @@ qboolean GL_AcquireNextSwapChainImage(void)
 	}
 	else if (err != VK_SUCCESS)
 		Sys_Error("Couldn't acquire next image");
+
+	num_images_acquired += 1;
 
 	VkRect2D render_area;
 	render_area.offset.x = 0;
@@ -2158,13 +2172,20 @@ void GL_EndRendering (qboolean swapchain_acquired)
 		present_info.waitSemaphoreCount = 1;
 		present_info.pWaitSemaphores = &draw_complete_semaphores[current_command_buffer];
 		err = fpQueuePresentKHR(vulkan_globals.queue, &present_info);
-		if ((err == VK_ERROR_OUT_OF_DATE_KHR) || (err == VK_ERROR_SURFACE_LOST_KHR) || (err == VK_SUBOPTIMAL_KHR) || (err == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT)) 
+#if defined(VK_EXT_full_screen_exclusive)
+		if ((err == VK_ERROR_OUT_OF_DATE_KHR) || (err == VK_ERROR_SURFACE_LOST_KHR) || (err == VK_SUBOPTIMAL_KHR) || (err == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT))
+#else
+		if ((err == VK_ERROR_OUT_OF_DATE_KHR) || (err == VK_ERROR_SURFACE_LOST_KHR) || (err == VK_SUBOPTIMAL_KHR))
+#endif
 		{
 			vid_changed = true;
 			Cbuf_AddText ("vid_restart\n");
 		}
 		else if (err != VK_SUCCESS)
 			Sys_Error("vkQueuePresentKHR failed");
+
+		if (err == VK_SUCCESS || err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_ERROR_SURFACE_LOST_KHR)
+			num_images_acquired -= 1;
 	}
 
 	command_buffer_submitted[current_command_buffer] = true;
@@ -2392,6 +2413,7 @@ void	VID_Init (void)
 	refreshrate = (int)vid_refreshrate.value;
 	bpp = (int)vid_bpp.value;
 	fullscreen = (int)vid_fullscreen.value;
+	vulkan_globals.want_full_screen_exclusive = vid_fullscreen.value >= 2;
 
 	if (COM_CheckParm("-current"))
 	{
@@ -2510,6 +2532,7 @@ static void VID_Restart (void)
 	refreshrate = (int)vid_refreshrate.value;
 	bpp = (int)vid_bpp.value;
 	fullscreen = vid_fullscreen.value ? true : false;
+	vulkan_globals.want_full_screen_exclusive = vid_fullscreen.value >= 2;
 
 	//
 	// validate new mode
@@ -2615,7 +2638,7 @@ void	VID_Toggle (void)
 		vid_toggle_works = false;
 		Con_DPrintf ("SDL_WM_ToggleFullScreen failed, attempting VID_Restart\n");
 	vrestart:
-		Cvar_SetQuick (&vid_fullscreen, VID_GetFullscreen() ? "0" : "1");
+		Cvar_SetQuick (&vid_fullscreen, VID_GetFullscreen() ? (vulkan_globals.want_full_screen_exclusive ? "2" : "1") : "0");
 		Cbuf_AddText ("vid_restart\n");
 	}
 }
@@ -2636,7 +2659,7 @@ void VID_SyncCvars (void)
 		}
 		Cvar_SetValueQuick (&vid_refreshrate, VID_GetCurrentRefreshRate());
 		Cvar_SetValueQuick (&vid_bpp, VID_GetCurrentBPP());
-		Cvar_SetQuick (&vid_fullscreen, VID_GetFullscreen() ? "1" : "0");
+		Cvar_SetQuick (&vid_fullscreen, VID_GetFullscreen() ? (vulkan_globals.want_full_screen_exclusive ? "2" : "1") : "0");
 		// don't sync vid_desktopfullscreen, it's a user preference that
 		// should persist even if we are in windowed mode.
 	}
@@ -2661,6 +2684,7 @@ enum {
 	VID_OPT_FILTER,
 	VID_OPT_ANISOTROPY,
 	VID_OPT_UNDERWATER,
+	VID_OPT_PARTICLES,
 	VID_OPT_TEST,
 	VID_OPT_APPLY,
 	VIDEO_OPTIONS_ITEMS
@@ -2956,6 +2980,33 @@ static void VID_Menu_ChooseNextWaterWarp (int dir)
 
 /*
 ================
+VID_Menu_ChooseNextParticles
+================
+*/
+static void VID_Menu_ChooseNextParticles (int dir)
+{
+	if (dir > 0)
+	{
+		if (r_particles.value == 0.0f)
+			Cvar_SetValueQuick(&r_particles, 2.0f);
+		else if (r_particles.value == 2.0f)
+			Cvar_SetValueQuick(&r_particles, 1.0f);
+		else 
+			Cvar_SetValueQuick(&r_particles, 0.0f);
+	}
+	else
+	{
+		if (r_particles.value == 0.0f)
+			Cvar_SetValueQuick(&r_particles, 1.0f);
+		else if (r_particles.value == 2.0f)
+			Cvar_SetValueQuick(&r_particles, 0.0f);
+		else 
+			Cvar_SetValueQuick(&r_particles, 2.0f);
+	}
+}
+
+/*
+================
 VID_Menu_ChooseNextRate
 
 chooses next refresh rate in order, then updates vid_refreshrate cvar
@@ -2985,6 +3036,19 @@ static void VID_Menu_ChooseNextRate (int dir)
 	}
 	
 	Cvar_SetValue ("vid_refreshrate",(float)vid_menu_rates[i]);
+}
+
+/*
+================
+VID_Menu_ChooseNextFullScreenMode
+================
+*/
+static void VID_Menu_ChooseNextFullScreenMode (int dir)
+{
+	if (vulkan_globals.full_screen_exclusive)
+		Cvar_SetValueQuick(&vid_fullscreen, (float)(((int)vid_fullscreen.value + 3 + dir) % 3));
+	else
+		Cvar_SetValueQuick(&vid_fullscreen, (float)(((int)vid_fullscreen.value + 2 + dir) % 2));
 }
 
 /*
@@ -3030,7 +3094,7 @@ static void VID_MenuKey (int key)
 			VID_Menu_ChooseNextRate (1);
 			break;
 		case VID_OPT_FULLSCREEN:
-			Cbuf_AddText ("toggle vid_fullscreen\n");
+			VID_Menu_ChooseNextFullScreenMode(-1);
 			break;
 		case VID_OPT_VSYNC:
 			Cbuf_AddText ("toggle vid_vsync\n"); // kristian
@@ -3049,6 +3113,9 @@ static void VID_MenuKey (int key)
 			break;
 		case VID_OPT_UNDERWATER:
 			VID_Menu_ChooseNextWaterWarp (-1);
+			break;
+		case VID_OPT_PARTICLES:
+			VID_Menu_ChooseNextParticles (-1);
 			break;
 		default:
 			break;
@@ -3069,7 +3136,7 @@ static void VID_MenuKey (int key)
 			VID_Menu_ChooseNextRate (-1);
 			break;
 		case VID_OPT_FULLSCREEN:
-			Cbuf_AddText ("toggle vid_fullscreen\n");
+			VID_Menu_ChooseNextFullScreenMode(1);
 			break;
 		case VID_OPT_VSYNC:
 			Cbuf_AddText ("toggle vid_vsync\n");
@@ -3088,6 +3155,9 @@ static void VID_MenuKey (int key)
 			break;
 		case VID_OPT_UNDERWATER:
 			VID_Menu_ChooseNextWaterWarp (1);
+			break;
+		case VID_OPT_PARTICLES:
+			VID_Menu_ChooseNextParticles (1);
 			break;
 		default:
 			break;
@@ -3109,7 +3179,7 @@ static void VID_MenuKey (int key)
 			VID_Menu_ChooseNextRate (1);
 			break;
 		case VID_OPT_FULLSCREEN:
-			Cbuf_AddText ("toggle vid_fullscreen\n");
+			VID_Menu_ChooseNextFullScreenMode(1);
 			break;
 		case VID_OPT_VSYNC:
 			Cbuf_AddText ("toggle vid_vsync\n");
@@ -3128,6 +3198,9 @@ static void VID_MenuKey (int key)
 			break;
 		case VID_OPT_UNDERWATER:
 			VID_Menu_ChooseNextWaterWarp (1);
+			break;
+		case VID_OPT_PARTICLES:
+			VID_Menu_ChooseNextParticles (1);
 			break;
 		case VID_OPT_TEST:
 			Cbuf_AddText ("vid_test\n");
@@ -3196,7 +3269,7 @@ static void VID_MenuDraw (void)
 			break;
 		case VID_OPT_FULLSCREEN:
 			M_Print (16, y, "        Fullscreen");
-			M_DrawCheckbox (184, y, (int)vid_fullscreen.value);
+			M_Print (184, y, ((int)vid_fullscreen.value == 0) ? "off" : (((int)vid_fullscreen.value == 1)  ? "on" : "exclusive"));
 			break;
 		case VID_OPT_VSYNC:
 			M_Print (16, y, "     Vertical sync");
@@ -3221,6 +3294,10 @@ static void VID_MenuDraw (void)
 		case VID_OPT_UNDERWATER:
 			M_Print (16, y, "     Underwater FX");
 			M_Print (184, y, ((int)r_waterwarp.value == 0) ? "off" : (((int)r_waterwarp.value == 1)  ? "Classic" : "glQuake"));
+			break;
+		case VID_OPT_PARTICLES:
+			M_Print (16, y, "         Particles");
+			M_Print (184, y, ((int)r_particles.value == 0) ? "off" : (((int)r_particles.value == 2)  ? "Classic" : "glQuake"));
 			break;
 		case VID_OPT_TEST:
 			y += 8; //separate the test and apply items
@@ -3476,3 +3553,22 @@ void SCR_ScreenShot_f (void)
 	vkFreeCommandBuffers(vulkan_globals.device, transient_command_pool, 1, &command_buffer);
 }
 
+void VID_FocusGained (void)
+{
+	has_focus = true;
+	if (vulkan_globals.want_full_screen_exclusive)
+	{
+		vid_changed = true;
+		Cbuf_AddText ("vid_restart\n");
+	}
+}
+
+void VID_FocusLost (void)
+{
+	has_focus = false;
+	if (vulkan_globals.want_full_screen_exclusive)
+	{
+		vid_changed = true;
+		Cbuf_AddText ("vid_restart\n");
+	}
+}

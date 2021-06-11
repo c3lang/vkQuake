@@ -25,7 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
-extern cvar_t gl_fullbrights, r_drawflat, r_oldskyleaf, r_showtris; //johnfitz
+extern cvar_t gl_fullbrights, r_drawflat, r_oldskyleaf, r_showtris, r_simd; //johnfitz
 
 byte *SV_FatPVS (vec3_t org, qmodel_t *worldmodel);
 
@@ -86,6 +86,208 @@ qboolean R_BackFaceCull (msurface_t *surf)
 	return false;
 }
 
+#ifdef USE_SSE2
+/*
+===============
+R_BackFaceCullSIMD
+
+Performs backface culling for 8 planes
+===============
+*/
+int R_BackFaceCullSIMD (soa_plane_t plane)
+{
+	__m128 pos = _mm_loadu_ps(r_refdef.vieworg);
+
+	__m128 px = _mm_shuffle_ps(pos, pos, _MM_SHUFFLE(0, 0, 0, 0));
+	__m128 v0 = _mm_mul_ps(_mm_loadu_ps(plane + 0), px);
+	__m128 v1 = _mm_mul_ps(_mm_loadu_ps(plane + 4), px);
+
+	__m128 py = _mm_shuffle_ps(pos, pos, _MM_SHUFFLE(1, 1, 1, 1));
+	v0 = _mm_add_ps(v0, _mm_mul_ps(_mm_loadu_ps(plane +  8), py));
+	v1 = _mm_add_ps(v1, _mm_mul_ps(_mm_loadu_ps(plane + 12), py));
+
+	__m128 pz = _mm_shuffle_ps(pos, pos, _MM_SHUFFLE(2, 2, 2, 2));
+	v0 = _mm_add_ps(v0, _mm_mul_ps(_mm_loadu_ps(plane + 16), pz));
+	v1 = _mm_add_ps(v1, _mm_mul_ps(_mm_loadu_ps(plane + 20), pz));
+
+	__m128 pd0 = _mm_loadu_ps(plane + 24);
+	__m128 pd1 = _mm_loadu_ps(plane + 28);
+
+	return _mm_movemask_ps(_mm_cmplt_ps(pd0, v0)) | (_mm_movemask_ps(_mm_cmplt_ps(pd1, v1)) << 4);
+}
+
+/*
+===============
+R_CullBoxSIMD
+
+Performs frustum culling for 8 bounding boxes
+===============
+*/
+int R_CullBoxSIMD (soa_aabb_t box, int activelanes)
+{
+	int i;
+	for (i = 0; i < 4; i++)
+	{
+		mplane_t *p;
+		byte signbits;
+		int ofs;
+
+		if (activelanes == 0)
+			break;
+
+		p = frustum + i;
+		signbits = p->signbits;
+
+		__m128 vplane = _mm_loadu_ps(p->normal);
+
+		ofs = signbits & 1 ? 0 : 8; // x min/max
+		__m128 px = _mm_shuffle_ps(vplane, vplane, _MM_SHUFFLE(0, 0, 0, 0));
+		__m128 v0 = _mm_mul_ps(_mm_loadu_ps(box + ofs), px);
+		__m128 v1 = _mm_mul_ps(_mm_loadu_ps(box + ofs + 4), px);
+
+		ofs = signbits & 2 ? 16 : 24; // y min/max
+		__m128 py = _mm_shuffle_ps(vplane, vplane, _MM_SHUFFLE(1, 1, 1, 1));
+		v0 = _mm_add_ps(v0, _mm_mul_ps(_mm_loadu_ps(box + ofs), py));
+		v1 = _mm_add_ps(v1, _mm_mul_ps(_mm_loadu_ps(box + ofs + 4), py));
+
+		ofs = signbits & 4 ? 32 : 40; // z min/max
+		__m128 pz = _mm_shuffle_ps(vplane, vplane, _MM_SHUFFLE(2, 2, 2, 2));
+		v0 = _mm_add_ps(v0, _mm_mul_ps(_mm_loadu_ps(box + ofs), pz));
+		v1 = _mm_add_ps(v1, _mm_mul_ps(_mm_loadu_ps(box + ofs + 4), pz));
+
+		__m128 pd = _mm_shuffle_ps(vplane, vplane, _MM_SHUFFLE(3, 3, 3, 3));
+		activelanes &= _mm_movemask_ps(_mm_cmplt_ps(pd, v0)) | (_mm_movemask_ps(_mm_cmplt_ps(pd, v1)) << 4);
+	}
+
+	return activelanes;
+}
+#endif // defined(USE_SSE2)
+
+#if defined(USE_SIMD)
+/*
+===============
+R_MarkVisSurfacesSIMD
+===============
+*/
+void R_MarkVisSurfacesSIMD (byte *vis)
+{
+	msurface_t	*surf;
+	int			i, j, k;
+	int			numleafs = cl.worldmodel->numleafs;
+	int			numsurfaces = cl.worldmodel->numsurfaces;
+	soa_aabb_t	*leafbounds = cl.worldmodel->soa_leafbounds;
+
+	memset(cl.worldmodel->surfvis, 0, (cl.worldmodel->numsurfaces + 7) >> 3);
+
+	// iterate through leaves, marking surfaces
+	for (i = 0; i < numleafs; i += 8)
+	{
+		int mask = vis[i>>3];
+		if (mask == 0)
+			continue;
+		
+		mask = R_CullBoxSIMD(leafbounds[i>>3], mask);
+		if (mask == 0)
+			continue;
+
+		for (j = 0; j < 8 && i + j < numleafs; j++)
+		{
+			if (!(mask & (1 << j)))
+				continue;
+
+			mleaf_t *leaf = &cl.worldmodel->leafs[1 + i + j];
+			if (leaf->contents != CONTENTS_SKY || r_oldskyleaf.value)
+			{
+				byte *surfmask = cl.worldmodel->surfvis;
+				int nummarksurfaces = leaf->nummarksurfaces;
+				int *marksurfaces = leaf->firstmarksurface;
+				for (k = 0; k < nummarksurfaces; k++)
+				{
+					int index = marksurfaces[k];
+					surfmask[index >> 3] |= 1 << (index & 7);
+				}
+			}
+
+			// add static models
+			if (leaf->efrags)
+				R_StoreEfrags (&leaf->efrags);
+		}
+	}
+
+	vis = cl.worldmodel->surfvis;
+	for (i = 0; i < numsurfaces; i += 8)
+	{
+		int mask = vis[i >> 3];
+		if (mask == 0)
+			continue;
+
+		mask &= R_BackFaceCullSIMD(cl.worldmodel->soa_surfplanes[i >> 3]);
+		if (mask == 0)
+			continue;
+
+		for (j = 0; j < 8; j++)
+		{
+			if (!(mask & (1 << j)))
+				continue;
+
+			surf = &cl.worldmodel->surfaces[i + j];
+			rs_brushpolys++; //count wpolys here
+			surf->visframe = r_visframecount;
+			R_ChainSurface(surf, chain_world);
+			R_RenderDynamicLightmaps(surf);
+			if (surf->texinfo->texture->warpimage)
+				surf->texinfo->texture->update_warp = true;
+		}
+	}
+}
+#endif // defined(USE_SIMD)
+
+/*
+===============
+R_MarkVisSurfaces
+===============
+*/
+void R_MarkVisSurfaces (byte* vis)
+{
+	int			i, j;
+	msurface_t	*surf;
+	mleaf_t		*leaf;
+
+	leaf = &cl.worldmodel->leafs[1];
+	for (i=0 ; i<cl.worldmodel->numleafs ; i++, leaf++)
+	{
+		if (vis[i>>3] & (1<<(i&7)))
+		{
+			if (R_CullBox(leaf->minmaxs, leaf->minmaxs + 3))
+				continue;
+
+			if (r_oldskyleaf.value || leaf->contents != CONTENTS_SKY)
+			{
+				for (j=0; j<leaf->nummarksurfaces; j++)
+				{
+					surf = &cl.worldmodel->surfaces[leaf->firstmarksurface[j]];
+					if (surf->visframe != r_visframecount)
+					{
+						surf->visframe = r_visframecount;
+						if (!R_BackFaceCull (surf))
+						{
+							rs_brushpolys++; //count wpolys here
+							R_ChainSurface(surf, chain_world);
+							R_RenderDynamicLightmaps(surf);
+							if (surf->texinfo->texture->warpimage)
+								surf->texinfo->texture->update_warp = true;
+						}
+					}
+				}
+			}
+
+			// add static models
+			if (leaf->efrags)
+				R_StoreEfrags (&leaf->efrags);
+		}
+	}
+}
+
 /*
 ===============
 R_MarkSurfaces -- johnfitz -- mark surfaces based on PVS and rebuild texture chains
@@ -94,16 +296,14 @@ R_MarkSurfaces -- johnfitz -- mark surfaces based on PVS and rebuild texture cha
 void R_MarkSurfaces (void)
 {
 	byte		*vis;
-	mleaf_t		*leaf;
-	msurface_t	*surf, **mark;
-	int			i, j;
+	int			i;
 	qboolean	nearwaterportal;
 
 	// check this leaf for water portals
 	// TODO: loop through all water surfs and use distance to leaf cullbox
 	nearwaterportal = false;
-	for (i=0, mark = r_viewleaf->firstmarksurface; i < r_viewleaf->nummarksurfaces; i++, mark++)
-		if ((*mark)->flags & SURF_DRAWTURB)
+	for (i=0; i < r_viewleaf->nummarksurfaces; i++)
+		if (cl.worldmodel->surfaces[r_viewleaf->firstmarksurface[i]].flags & SURF_DRAWTURB)
 			nearwaterportal = true;
 
 	// choose vis data
@@ -122,37 +322,12 @@ void R_MarkSurfaces (void)
 			cl.worldmodel->textures[i]->texturechains[chain_world] = NULL;
 
 	// iterate through leaves, marking surfaces
-	leaf = &cl.worldmodel->leafs[1];
-	for (i=0 ; i<cl.worldmodel->numleafs ; i++, leaf++)
-	{
-		if (vis[i>>3] & (1<<(i&7)))
-		{
-			if (R_CullBox(leaf->minmaxs, leaf->minmaxs + 3))
-				continue;
-
-			if (r_oldskyleaf.value || leaf->contents != CONTENTS_SKY)
-				for (j=0, mark = leaf->firstmarksurface; j<leaf->nummarksurfaces; j++, mark++)
-				{
-					surf = *mark;
-					if (surf->visframe != r_visframecount)
-					{
-						(*mark)->visframe = r_visframecount;
-						if (!R_CullBox(surf->mins, surf->maxs) && !R_BackFaceCull (surf))
-						{
-							rs_brushpolys++; //count wpolys here
-							R_ChainSurface(surf, chain_world);
-							R_RenderDynamicLightmaps(surf);
-							if (surf->texinfo->texture->warpimage)
-								surf->texinfo->texture->update_warp = true;
-						}
-					}
-				}
-
-			// add static models
-			if (leaf->efrags)
-				R_StoreEfrags (&leaf->efrags);
-		}
-	}
+#if defined(USE_SIMD)
+	if (use_simd)
+		R_MarkVisSurfacesSIMD(vis);
+	else
+#endif
+		R_MarkVisSurfaces(vis);
 }
 
 //==============================================================================
@@ -259,7 +434,9 @@ Returns the water alpha to use for the entity and surface combination.
 float GL_WaterAlphaForEntitySurface (entity_t *ent, msurface_t *s)
 {
 	float entalpha;
-	if (ent == NULL || ent->alpha == ENTALPHA_DEFAULT)
+	if (r_lightmap_cheatsafe)
+		entalpha = 1;
+	else if (ent == NULL || ent->alpha == ENTALPHA_DEFAULT)
 		entalpha = GL_WaterAlphaForSurface(s);
 	else
 		entalpha = ENTALPHA_DECODE(ent->alpha);
@@ -302,9 +479,6 @@ void R_DrawTextureChains_Water (qmodel_t *model, entity_t *ent, texchain_t chain
 	texture_t	*t;
 	qboolean	bound;
 	float entalpha;
-
-	if (r_drawflat_cheatsafe || r_lightmap_cheatsafe) // ericw -- !r_drawworld_cheatsafe check moved to R_DrawWorld_Water ()
-		return;
 
 	float color[3] = { 1.0f, 1.0f, 1.0f };
 
@@ -366,6 +540,8 @@ void R_DrawTextureChains_Multitexture (qmodel_t *model, entity_t *ent, texchain_
 	vulkan_globals.vk_cmd_bind_vertex_buffers(vulkan_globals.command_buffer, 0, 1, &bmodel_vertex_buffer, &offset);
 
 	vulkan_globals.vk_cmd_bind_descriptor_sets(vulkan_globals.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.world_pipeline_layout.handle, 2, 1, &nulltexture->descriptor_set, 0, NULL);
+	if (r_lightmap_cheatsafe)
+		vulkan_globals.vk_cmd_bind_descriptor_sets(vulkan_globals.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.world_pipeline_layout.handle, 0, 1, &greytexture->descriptor_set, 0, NULL);
 
 	if (alpha_blend) {
 		R_PushConstants(VK_SHADER_STAGE_ALL_GRAPHICS, 20 * sizeof(float), 1 * sizeof(float), &alpha);
@@ -378,7 +554,7 @@ void R_DrawTextureChains_Multitexture (qmodel_t *model, entity_t *ent, texchain_
 		if (!t || !t->texturechains[chain] || t->texturechains[chain]->flags & (SURF_DRAWTILED | SURF_NOTEXTURE))
 			continue;
 
-		if (gl_fullbrights.value && (fullbright = R_TextureAnimation(t, ent != NULL ? ent->frame : 0)->fullbright))
+		if (gl_fullbrights.value && (fullbright = R_TextureAnimation(t, ent != NULL ? ent->frame : 0)->fullbright) && !r_lightmap_cheatsafe)
 		{
 			fullbright_enabled = true;
 			vulkan_globals.vk_cmd_bind_descriptor_sets(vulkan_globals.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.world_pipeline_layout.handle, 2, 1, &fullbright->descriptor_set, 0, NULL);
@@ -397,7 +573,8 @@ void R_DrawTextureChains_Multitexture (qmodel_t *model, entity_t *ent, texchain_
 			{
 				texture_t * texture = R_TextureAnimation(t, ent != NULL ? ent->frame : 0);
 				gltexture_t * gl_texture = texture->gltexture;
-				vulkan_globals.vk_cmd_bind_descriptor_sets(vulkan_globals.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.world_pipeline_layout.handle, 0, 1, &gl_texture->descriptor_set, 0, NULL);
+				if (!r_lightmap_cheatsafe)
+					vulkan_globals.vk_cmd_bind_descriptor_sets(vulkan_globals.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.world_pipeline_layout.handle, 0, 1, &gl_texture->descriptor_set, 0, NULL);
 
 				alpha_test = (t->texturechains[chain]->flags & SURF_DRAWFENCE) != 0;
 				bound = true;

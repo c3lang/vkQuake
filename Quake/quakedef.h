@@ -43,7 +43,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	QUAKESPASM_VER_SUFFIX		// optional version suffix string literal like "-beta1"
 #endif
 #define	VKQUAKE_VERSION		1.05
-#define	VKQUAKE_VER_PATCH	1	// helper to print a string like 0.92.1
+#define	VKQUAKE_VER_PATCH	3	// helper to print a string like 0.92.1
 #ifndef	VKQUAKE_VER_SUFFIX
 #define	VKQUAKE_VER_SUFFIX		// optional version suffix like -beta1
 #endif
@@ -247,11 +247,6 @@ typedef struct
 #include "server.h"
 
 #include "platform.h"
-#if defined(SDL_FRAMEWORK) || defined(NO_SDL_CONFIG)
-#include <SDL2/SDL.h>
-#else
-#include "SDL.h"
-#endif
 
 #include <vulkan/vulkan_core.h>
 
@@ -292,7 +287,6 @@ extern qboolean noclip_anglehack;
 extern	quakeparms_t *host_parms;
 
 extern	cvar_t		sys_ticrate;
-extern	cvar_t		sys_throttle;
 extern	cvar_t		sys_nostdout;
 extern	cvar_t		developer;
 extern	cvar_t		max_edicts; //johnfitz
@@ -347,6 +341,10 @@ extern int num_vulkan_bmodel_allocations;
 extern int num_vulkan_mesh_allocations;
 extern int num_vulkan_misc_allocations;
 extern int num_vulkan_dynbuf_allocations;
+extern int num_vulkan_combined_image_samplers;
+extern int num_vulkan_ubos_dynamic;
+extern int num_vulkan_input_attachments;
+extern int num_vulkan_storage_images;
 
 #endif	/* QUAKEDEFS_H */
 

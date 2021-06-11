@@ -35,7 +35,7 @@ extern cvar_t vid_anisotropic;
 #define	MAX_MIPS 16
 static int numgltextures;
 static gltexture_t	*active_gltextures, *free_gltextures;
-gltexture_t		*notexture, *nulltexture;
+gltexture_t		*notexture, *nulltexture, *whitetexture, *greytexture;
 
 unsigned int d_8to24table[256];
 unsigned int d_8to24table_fbright[256];
@@ -419,6 +419,8 @@ void TexMgr_Init (void)
 	int i;
 	static byte notexture_data[16] = {159,91,83,255,0,0,0,255,0,0,0,255,159,91,83,255}; //black and pink checker
 	static byte nulltexture_data[16] = {127,191,255,255,0,0,0,255,0,0,0,255,127,191,255,255}; //black and blue checker
+	static byte whitetexture_data[16] = {255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255}; //white
+	static byte greytexture_data[16] = {127,127,127,255,127,127,127,255,127,127,127,255,127,127,127,255}; //50% grey
 	extern texture_t *r_notexture_mip, *r_notexture_mip2;
 
 	// init texture list
@@ -439,6 +441,8 @@ void TexMgr_Init (void)
 	// load notexture images
 	notexture = TexMgr_LoadImage (NULL, "notexture", 2, 2, SRC_RGBA, notexture_data, "", (src_offset_t)notexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
 	nulltexture = TexMgr_LoadImage (NULL, "nulltexture", 2, 2, SRC_RGBA, nulltexture_data, "", (src_offset_t)nulltexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
+	whitetexture = TexMgr_LoadImage (NULL, "whitetexture", 2, 2, SRC_RGBA, whitetexture_data, "", (src_offset_t)whitetexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
+	greytexture = TexMgr_LoadImage (NULL, "greytexture", 2, 2, SRC_RGBA, greytexture_data, "", (src_offset_t)greytexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
 
 	//have to assign these here becuase Mod_Init is called before TexMgr_Init
 	r_notexture_mip->gltexture = r_notexture_mip2->gltexture = notexture;
@@ -843,6 +847,8 @@ TexMgr_LoadImage32 -- handles 32bit source data
 */
 static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 {
+	GL_DeleteTexture(glt);
+
 	// mipmap down
 	int picmip = (glt->flags & TEXPREF_NOPICMIP) ? 0 : q_max((int)gl_picmip.value, 0);
 	int mipwidth = TexMgr_SafeTextureSize (glt->width >> picmip);
@@ -931,14 +937,7 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 	GL_SetObjectName((uint64_t)glt->image_view, VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_VIEW_EXT, glt->name);
 
 	// Allocate and update descriptor for this texture
-	VkDescriptorSetAllocateInfo descriptor_set_allocate_info;
-	memset(&descriptor_set_allocate_info, 0, sizeof(descriptor_set_allocate_info));
-	descriptor_set_allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	descriptor_set_allocate_info.descriptorPool = vulkan_globals.descriptor_pool;
-	descriptor_set_allocate_info.descriptorSetCount = 1;
-	descriptor_set_allocate_info.pSetLayouts = &vulkan_globals.single_texture_set_layout;
-
-	vkAllocateDescriptorSets(vulkan_globals.device, &descriptor_set_allocate_info, &glt->descriptor_set);
+	glt->descriptor_set = R_AllocateDescriptorSet(&vulkan_globals.single_texture_set_layout);
 
 	TexMgr_SetFilterModes (glt);
 
@@ -968,14 +967,7 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 		GL_SetObjectName((uint64_t)glt->frame_buffer, VK_DEBUG_REPORT_OBJECT_TYPE_FRAMEBUFFER_EXT, glt->name);
 
 		// Allocate and update descriptor for this texture
-		VkDescriptorSetAllocateInfo descriptor_set_allocate_info;
-		memset(&descriptor_set_allocate_info, 0, sizeof(descriptor_set_allocate_info));
-		descriptor_set_allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		descriptor_set_allocate_info.descriptorPool = vulkan_globals.descriptor_pool;
-		descriptor_set_allocate_info.descriptorSetCount = 1;
-		descriptor_set_allocate_info.pSetLayouts = &vulkan_globals.single_texture_cs_write_set_layout;
-
-		vkAllocateDescriptorSets(vulkan_globals.device, &descriptor_set_allocate_info, &glt->warp_write_descriptor_set);
+		glt->warp_write_descriptor_set = R_AllocateDescriptorSet(&vulkan_globals.single_texture_cs_write_set_layout);
 
 		VkDescriptorImageInfo output_image_info;
 		memset(&output_image_info, 0, sizeof(output_image_info));
@@ -1089,6 +1081,8 @@ TexMgr_LoadImage8 -- handles 8bit source data, then passes it to LoadImage32
 */
 static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 {
+	GL_DeleteTexture(glt);
+
 	extern cvar_t gl_fullbrights;
 	qboolean padw = false, padh = false;
 	byte padbyte;
@@ -1454,9 +1448,9 @@ void TexMgr_CollectGarbage (void)
 			vkDestroyImageView(vulkan_globals.device, garbage->target_image_view, NULL);
 		vkDestroyImageView(vulkan_globals.device, garbage->image_view, NULL);
 		vkDestroyImage(vulkan_globals.device, garbage->image, NULL);
-		vkFreeDescriptorSets(vulkan_globals.device, vulkan_globals.descriptor_pool, 1, &garbage->descriptor_set);
+		R_FreeDescriptorSet(garbage->descriptor_set, &vulkan_globals.single_texture_set_layout);
 		if (garbage->warp_write_descriptor_set)
-			vkFreeDescriptorSets(vulkan_globals.device, vulkan_globals.descriptor_pool, 1, &garbage->warp_write_descriptor_set);
+			R_FreeDescriptorSet(garbage->descriptor_set, &vulkan_globals.single_texture_cs_write_set_layout);
 
 		GL_FreeFromHeaps(num_texmgr_heaps, texmgr_heaps, garbage->heap, garbage->heap_node, &num_vulkan_tex_allocations);
 	}
@@ -1474,6 +1468,9 @@ static void GL_DeleteTexture (gltexture_t *texture)
 {
 	int garbage_index;
 	texture_garbage_t * garbage;
+
+	if (texture->image_view == NULL)
+		return;
 
 	if (in_update_screen)
 	{
@@ -1498,9 +1495,9 @@ static void GL_DeleteTexture (gltexture_t *texture)
 			vkDestroyImageView(vulkan_globals.device, texture->target_image_view, NULL);
 		vkDestroyImageView(vulkan_globals.device, texture->image_view, NULL);
 		vkDestroyImage(vulkan_globals.device, texture->image, NULL);
-		vkFreeDescriptorSets(vulkan_globals.device, vulkan_globals.descriptor_pool, 1, &texture->descriptor_set);
+		R_FreeDescriptorSet(texture->descriptor_set, &vulkan_globals.single_texture_set_layout);
 		if (texture->warp_write_descriptor_set)
-			vkFreeDescriptorSets(vulkan_globals.device, vulkan_globals.descriptor_pool, 1, &texture->warp_write_descriptor_set);
+			R_FreeDescriptorSet(texture->warp_write_descriptor_set, &vulkan_globals.single_texture_cs_write_set_layout);
 
 		GL_FreeFromHeaps(num_texmgr_heaps, texmgr_heaps, texture->heap, texture->heap_node, &num_vulkan_tex_allocations);
 	}

@@ -115,6 +115,14 @@ typedef struct vulkan_pipeline_s {
 	vulkan_pipeline_layout_t	layout;
 } vulkan_pipeline_t;
 
+typedef struct vulkan_desc_set_layout_s {
+	VkDescriptorSetLayout		handle;
+	int							num_combined_image_samplers;
+	int							num_ubos_dynamic;
+	int							num_input_attachments;
+	int							num_storage_images;
+} vulkan_desc_set_layout_t;
+
 #define WORLD_PIPELINE_COUNT 8
 
 typedef struct
@@ -127,6 +135,7 @@ typedef struct
 	vulkan_pipeline_t					current_pipeline;
 	VkClearValue						color_clear_value;
 	VkFormat							swap_chain_format;
+	qboolean							want_full_screen_exclusive;
 	qboolean							swap_chain_full_screen_exclusive;
 	qboolean							swap_chain_full_screen_acquired;
 	VkPhysicalDeviceProperties			device_properties;
@@ -190,12 +199,12 @@ typedef struct
 
 	// Descriptors
 	VkDescriptorPool					descriptor_pool;
-	VkDescriptorSetLayout				ubo_set_layout;
-	VkDescriptorSetLayout				single_texture_set_layout;
-	VkDescriptorSetLayout				input_attachment_set_layout;
+	vulkan_desc_set_layout_t			ubo_set_layout;
+	vulkan_desc_set_layout_t			single_texture_set_layout;
+	vulkan_desc_set_layout_t			input_attachment_set_layout;
 	VkDescriptorSet						screen_warp_desc_set;
-	VkDescriptorSetLayout				screen_warp_set_layout;
-	VkDescriptorSetLayout				single_texture_cs_write_set_layout;
+	vulkan_desc_set_layout_t			screen_warp_set_layout;
+	vulkan_desc_set_layout_t			single_texture_cs_write_set_layout;
 
 	// Samplers
 	VkSampler							point_sampler;
@@ -233,6 +242,7 @@ extern	mplane_t	frustum[4];
 extern	int render_pass_index;
 extern	qboolean render_warp;
 extern	qboolean in_update_screen;
+extern	qboolean use_simd;
 
 //
 // view origin
@@ -249,16 +259,13 @@ extern	refdef_t	r_refdef;
 extern	mleaf_t		*r_viewleaf, *r_oldviewleaf;
 extern	int		d_lightstylevalue[256];	// 8.8 fraction of base light value
 
-extern	cvar_t	r_norefresh;
 extern	cvar_t	r_drawentities;
 extern	cvar_t	r_drawworld;
 extern	cvar_t	r_drawviewmodel;
 extern	cvar_t	r_speeds;
 extern	cvar_t	r_pos;
 extern	cvar_t	r_waterwarp;
-extern	cvar_t	r_fullbright;
 extern	cvar_t	r_lightmap;
-extern	cvar_t	r_shadows;
 extern	cvar_t	r_wateralpha;
 extern	cvar_t	r_lavaalpha;
 extern	cvar_t	r_telealpha;
@@ -266,23 +273,10 @@ extern	cvar_t	r_slimealpha;
 extern	cvar_t	r_dynamic;
 extern	cvar_t	r_novis;
 
-extern	cvar_t	gl_clear;
-extern	cvar_t	gl_cull;
-extern	cvar_t	gl_smoothmodels;
-extern	cvar_t	gl_affinemodels;
 extern	cvar_t	gl_polyblend;
 extern	cvar_t	gl_nocolors;
 
-extern	cvar_t	gl_playermip;
-
 extern	cvar_t	gl_subdivide_size;
-extern	float	load_subdivide_size; //johnfitz -- remember what subdivide_size value was when this map was loaded
-
-extern int		gl_stencilbits;
-
-//johnfitz -- anisotropic filtering
-extern	float		gl_max_anisotropy;
-extern	qboolean	gl_anisotropy_able;
 
 //johnfitz -- polygon offset
 #define OFFSET_BMODEL 1
@@ -348,7 +342,7 @@ struct lightmap_s
 extern struct lightmap_s *lightmap;
 extern int lightmap_count;	//allocated lightmaps
 
-extern qboolean r_drawflat_cheatsafe, r_fullbright_cheatsafe, r_lightmap_cheatsafe, r_drawworld_cheatsafe; //johnfitz
+extern qboolean r_lightmap_cheatsafe, r_drawworld_cheatsafe; //johnfitz
 
 extern float	map_wateralpha, map_lavaalpha, map_telealpha, map_slimealpha; //ericw
 
@@ -452,6 +446,9 @@ static inline void R_PushConstants(VkShaderStageFlags stage_flags, int offset, i
 {
 	vulkan_globals.vk_cmd_push_constants(vulkan_globals.command_buffer, vulkan_globals.current_pipeline.layout.handle, stage_flags, offset, size, data);
 }
+
+VkDescriptorSet R_AllocateDescriptorSet(vulkan_desc_set_layout_t * layout);
+void R_FreeDescriptorSet(VkDescriptorSet desc_set, vulkan_desc_set_layout_t * layout);
 
 void R_InitStagingBuffers();
 void R_SubmitStagingBuffers();

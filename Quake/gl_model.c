@@ -1088,43 +1088,6 @@ void Mod_PolyForUnlitSurface (msurface_t *fa)
 
 /*
 =================
-Mod_CalcSurfaceBounds -- johnfitz -- calculate bounding box for per-surface frustum culling
-=================
-*/
-void Mod_CalcSurfaceBounds (msurface_t *s)
-{
-	int			i, e;
-	mvertex_t	*v;
-
-	s->mins[0] = s->mins[1] = s->mins[2] = FLT_MAX;
-	s->maxs[0] = s->maxs[1] = s->maxs[2] = -FLT_MAX;
-
-	for (i=0 ; i<s->numedges ; i++)
-	{
-		e = loadmodel->surfedges[s->firstedge+i];
-		if (e >= 0)
-			v = &loadmodel->vertexes[loadmodel->edges[e].v[0]];
-		else
-			v = &loadmodel->vertexes[loadmodel->edges[-e].v[1]];
-
-		if (s->mins[0] > v->position[0])
-			s->mins[0] = v->position[0];
-		if (s->mins[1] > v->position[1])
-			s->mins[1] = v->position[1];
-		if (s->mins[2] > v->position[2])
-			s->mins[2] = v->position[2];
-
-		if (s->maxs[0] < v->position[0])
-			s->maxs[0] = v->position[0];
-		if (s->maxs[1] < v->position[1])
-			s->maxs[1] = v->position[1];
-		if (s->maxs[2] < v->position[2])
-			s->maxs[2] = v->position[2];
-	}
-}
-
-/*
-=================
 Mod_LoadFaces
 =================
 */
@@ -1199,8 +1162,6 @@ void Mod_LoadFaces (lump_t *l, qboolean bsp2)
 		out->texinfo = loadmodel->texinfo + texinfon;
 
 		CalcSurfaceExtents (out);
-
-		Mod_CalcSurfaceBounds (out); //johnfitz -- for per-surface frustum culling
 
 	// lighting info
 		if (lofs == -1)
@@ -1593,6 +1554,67 @@ void Mod_LoadLeafs (lump_t *l, int bsp2)
 
 /*
 =================
+SoA_FillBoxLane
+=================
+*/
+void SoA_FillBoxLane(soa_aabb_t *boxes, int index, vec3_t mins, vec3_t maxs)
+{
+	float *dst = boxes[index >> 3];
+	index &= 7;
+	dst[index +  0] = mins[0];
+	dst[index +  8] = maxs[0];
+	dst[index + 16] = mins[1];
+	dst[index + 24] = maxs[1];
+	dst[index + 32] = mins[2];
+	dst[index + 40] = maxs[2];
+}
+
+/*
+=================
+SoA_FillPlaneLane
+=================
+*/
+void SoA_FillPlaneLane(soa_plane_t *planes, int index, mplane_t *src, qboolean flip)
+{
+	float side = flip ? -1.0f : 1.0f;
+	float *dst = planes[index >> 3];
+	index &= 7;
+	dst[index +  0] = side * src->normal[0];
+	dst[index +  8] = side * src->normal[1];
+	dst[index + 16] = side * src->normal[2];
+	dst[index + 24] = side * src->dist;
+}
+
+/*
+=================
+Mod_PrepareSIMDData
+=================
+*/
+void Mod_PrepareSIMDData (void)
+{
+#ifdef USE_SIMD
+	int i;
+
+	loadmodel->soa_leafbounds = Hunk_Alloc(6 * sizeof(float) * ((loadmodel->numleafs + 7) & ~7));
+	loadmodel->surfvis        = Hunk_Alloc((loadmodel->numsurfaces + 7) & ~7);
+	loadmodel->soa_surfplanes = Hunk_Alloc(4 * sizeof(float) * ((loadmodel->numsurfaces + 7) & ~7));
+
+	for (i = 0; i < loadmodel->numleafs; ++i)
+	{
+		mleaf_t *leaf = &loadmodel->leafs[i + 1];
+		SoA_FillBoxLane(loadmodel->soa_leafbounds, i, leaf->minmaxs, leaf->minmaxs + 3);
+	}
+
+	for (i = 0; i < loadmodel->numsurfaces; ++i)
+	{
+		msurface_t *surf = &loadmodel->surfaces[i];
+		SoA_FillPlaneLane(loadmodel->soa_surfplanes, i, surf->plane, surf->flags & SURF_PLANEBACK);
+	}
+#endif // def USE_SIMD
+}
+
+/*
+=================
 Mod_LoadClipnodes
 =================
 */
@@ -1744,7 +1766,7 @@ Mod_LoadMarksurfaces
 void Mod_LoadMarksurfaces (lump_t *l, int bsp2)
 {
 	int		i, j, count;
-	msurface_t **out;
+	int		*out;
 	if (bsp2)
 	{
 		unsigned int *in = (unsigned int *)(mod_base + l->fileofs);
@@ -1753,7 +1775,7 @@ void Mod_LoadMarksurfaces (lump_t *l, int bsp2)
 			Host_Error ("Mod_LoadMarksurfaces: funny lump size in %s",loadmodel->name);
 
 		count = l->filelen / sizeof(*in);
-		out = (msurface_t **)Hunk_AllocName ( count*sizeof(*out), loadname);
+		out = (int*)Hunk_AllocName ( count*sizeof(*out), loadname);
 
 		loadmodel->marksurfaces = out;
 		loadmodel->nummarksurfaces = count;
@@ -1763,7 +1785,7 @@ void Mod_LoadMarksurfaces (lump_t *l, int bsp2)
 			j = LittleLong(in[i]);
 			if (j >= loadmodel->numsurfaces)
 				Host_Error ("Mod_LoadMarksurfaces: bad surface number");
-			out[i] = loadmodel->surfaces + j;
+			out[i] = j;
 		}
 	}
 	else
@@ -1774,7 +1796,7 @@ void Mod_LoadMarksurfaces (lump_t *l, int bsp2)
 			Host_Error ("Mod_LoadMarksurfaces: funny lump size in %s",loadmodel->name);
 
 		count = l->filelen / sizeof(*in);
-		out = (msurface_t **)Hunk_AllocName ( count*sizeof(*out), loadname);
+		out = (int*)Hunk_AllocName ( count*sizeof(*out), loadname);
 
 		loadmodel->marksurfaces = out;
 		loadmodel->nummarksurfaces = count;
@@ -1789,7 +1811,7 @@ void Mod_LoadMarksurfaces (lump_t *l, int bsp2)
 			j = (unsigned short)LittleShort(in[i]); //johnfitz -- explicit cast as unsigned short
 			if (j >= loadmodel->numsurfaces)
 				Sys_Error ("Mod_LoadMarksurfaces: bad surface number");
-			out[i] = loadmodel->surfaces + j;
+			out[i] = j;
 		}
 	}
 }
@@ -2028,6 +2050,7 @@ void Mod_LoadBrushModel (qmodel_t *mod, void *buffer)
 	Mod_LoadEntities (&header->lumps[LUMP_ENTITIES]);
 	Mod_LoadSubmodels (&header->lumps[LUMP_MODELS]);
 
+	Mod_PrepareSIMDData ();
 	Mod_MakeHull0 ();
 
 	mod->numframes = 2;		// regular and alternate animation
@@ -2480,7 +2503,7 @@ Mod_SetExtraFlags -- johnfitz -- set up extra flags that aren't in the mdl
 */
 void Mod_SetExtraFlags (qmodel_t *mod)
 {
-	extern cvar_t r_nolerp_list, r_noshadow_list;
+	extern cvar_t r_nolerp_list;
 
 	if (!mod || mod->type != mod_alias)
 		return;
@@ -2490,10 +2513,6 @@ void Mod_SetExtraFlags (qmodel_t *mod)
 	// nolerp flag
 	if (nameInList(r_nolerp_list.string, mod->name))
 		mod->flags |= MOD_NOLERP;
-
-	// noshadow flag
-	if (nameInList(r_noshadow_list.string, mod->name))
-		mod->flags |= MOD_NOSHADOW;
 
 	// fullbright hack (TODO: make this a cvar list)
 	if (!strcmp (mod->name, "progs/flame2.mdl") ||

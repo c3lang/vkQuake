@@ -42,13 +42,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 
 qboolean		isDedicated;
-cvar_t		sys_throttle = {"sys_throttle", "0.02", CVAR_ARCHIVE};
 
 static HANDLE		hinput, houtput;
 
 #define	MAX_HANDLES		32	/* johnfitz -- was 10 */
 static FILE		*sys_handles[MAX_HANDLES];
 
+static double counter_freq;
 
 static int findhandle (void)
 {
@@ -245,6 +245,8 @@ void Sys_Init (void)
 		hinput = GetStdHandle (STD_INPUT_HANDLE);
 		houtput = GetStdHandle (STD_OUTPUT_HANDLE);
 	}
+
+	counter_freq = (double)SDL_GetPerformanceFrequency();
 }
 
 void Sys_mkdir (const char *path)
@@ -331,7 +333,7 @@ void Sys_Quit (void)
 
 double Sys_DoubleTime (void)
 {
-	return SDL_GetTicks() / 1000.0;
+	return (double)SDL_GetPerformanceCounter() / counter_freq;
 }
 
 const char *Sys_ConsoleInput (void)
