@@ -35,9 +35,6 @@ extern qboolean	pr_alpha_supported; //johnfitz
 
 //============================================================================
 
-static struct entity_num_state_s *snapshot_entstate;
-static size_t snapshot_numents;
-static size_t snapshot_maxents;
 
 void SV_CalcStats(client_t *client, int *statsi, float *statsf, char **statss)
 {
@@ -50,6 +47,8 @@ void SV_CalcStats(client_t *client, int *statsi, float *statsf, char **statss)
 	memset(statss, 0, sizeof(*statss)*MAX_CL_STATS);
 	statsf[STAT_HEALTH] = ent->v.health;
 	statsi[STAT_WEAPON] = SV_ModelIndex(PR_GetString(ent->v.weaponmodel));
+	if ((unsigned int)statsi[STAT_WEAPON] >= client->limit_models)
+		statsi[STAT_WEAPON] = 0;
 	statsf[STAT_AMMO] = ent->v.currentammo;
 	statsf[STAT_ARMOR] = ent->v.armorvalue;
 	statsf[STAT_WEAPONFRAME] = ent->v.weaponframe;
@@ -311,6 +310,10 @@ static void MSGFTE_WriteEntityUpdate(unsigned int bits, entity_state_t *state, s
 	}
 }
 
+static struct entity_num_state_s *snapshot_entstate;
+static size_t snapshot_numents;
+static size_t snapshot_maxents;
+
 void SVFTE_DestroyFrames(client_t *client)
 {
 	int i;
@@ -396,8 +399,12 @@ static void SVFTE_DroppedFrame(client_t *client, int sequence)
 	}
 	//flag their various entities as needing a resend too.
 	for (i = 0; i < frame->numents; i++)
-		client->pendingentities_bits[frame->ents[i].num] |= frame->ents[i].bits;
-
+	{
+		if (frame->ents[i].ebits)
+			client->pendingentities_bits[frame->ents[i].num] |= frame->ents[i].ebits;
+		if (frame->ents[i].csqcbits)
+			client->pendingcsqcentities_bits[frame->ents[i].num] |= frame->ents[i].csqcbits;
+	}
 }
 void SVFTE_Ack(client_t *client, int sequence)
 {	//any gaps in the sequence need to considered dropped
@@ -561,7 +568,7 @@ static void SVFTE_CalcEntityDeltas(client_t *client)
 		else if (olds==oldstop || (news!=newstop && news->num < olds->num))
 		{
 			//new ent is new this frame, so reset everything.
-			client->pendingentities_bits[news->num] = UF_RESET | UF_RESET2;
+			client->pendingentities_bits[news->num] = UF_RESET;
 			//don't need to calc the other bits here, resets are enough
 			news++;
 		}
@@ -593,7 +600,7 @@ static void SVFTE_CalcEntityDeltas(client_t *client)
 static void SVFTE_WriteEntitiesToClient(client_t *client, sizebuf_t *msg, size_t overflowsize)
 {
 	struct entity_num_state_s *state, *stateend;
-	unsigned int bits, logbits;
+	unsigned int entbits, logbits, netbits;
 	size_t entnum;
 	int sequence = NET_QSocketGetSequenceOut(client->netconnection);
 	size_t origmaxsize = msg->maxsize;
@@ -615,14 +622,14 @@ static void SVFTE_WriteEntitiesToClient(client_t *client, sizebuf_t *msg, size_t
 	MSG_WriteFloat(msg, frame->timestamp);	//should be the time the last physics frame was run.
 	for (entnum = client->snapshotresume; entnum < client->numpendingentities; entnum++)
 	{
-		bits = client->pendingentities_bits[entnum];
-		if (!(bits & ~UF_RESET2))
+		entbits = client->pendingentities_bits[entnum];
+		if (!(entbits & ~UF_RESET2))
 			continue;	//nothing to send (if reset2 is still set, then leave it pending until there's more data
 
 		rollbacksize = msg->cursize;
 		client->pendingentities_bits[entnum] = 0;
 		logbits = 0;
-		if (bits & UF_REMOVE)
+		if (entbits & UF_REMOVE)
 		{
 			if (entnum > 0x3fff)
 			{
@@ -639,21 +646,23 @@ static void SVFTE_WriteEntitiesToClient(client_t *client, sizebuf_t *msg, size_t
 				state++;
 			if (state<stateend && state->num == entnum)
 			{
-				if (bits & UF_RESET2)
+				if (entbits & UF_RESET2)
 				{
 					/*if reset2, then this is the second packet sent to the client and should have a forced reset (but which isn't tracked)*/
-					logbits = bits & ~(UF_RESET|UF_RESET2);
-					bits = UF_RESET | MSGFTE_DeltaCalcBits(&EDICT_NUM(entnum)->baseline, &state->state);
+					logbits = entbits & ~(UF_RESET|UF_RESET2);
+					netbits = UF_RESET | MSGFTE_DeltaCalcBits(&EDICT_NUM(entnum)->baseline, &state->state);
+//					Con_Printf("RESET2 %u @ %i\n", (int)entnum, sequence);
 				}
-				else if (bits & UF_RESET)
+				else if (entbits & UF_RESET)
 				{
 					/*flag the entity for the next packet, so we always get two resets when it appears, to reduce the effects of packetloss on seeing rockets etc*/
 					client->pendingentities_bits[entnum] = UF_RESET2;
-					bits = UF_RESET | MSGFTE_DeltaCalcBits(&EDICT_NUM(entnum)->baseline, &state->state);
+					netbits = UF_RESET | MSGFTE_DeltaCalcBits(&EDICT_NUM(entnum)->baseline, &state->state);
 					logbits = UF_RESET;
+//					Con_Printf("RESET %u @ %i\n", (int)entnum, sequence);
 				}
 				else
-					logbits = bits;
+					logbits = netbits = entbits;
 
 				if (entnum >= 0x4000)
 				{
@@ -662,14 +671,15 @@ static void SVFTE_WriteEntitiesToClient(client_t *client, sizebuf_t *msg, size_t
 				}
 				else
 					MSG_WriteShort(msg, entnum);
-				MSGFTE_WriteEntityUpdate(bits, &state->state, msg, client->protocol_pext2, sv.protocolflags);
+//				SV_EmitDeltaEntIndex(msg, j, false, true);
+				MSGFTE_WriteEntityUpdate(netbits, &state->state, msg, client->protocol_pext2, sv.protocolflags);
 			}
 		}
 
 		if ((size_t)msg->cursize + 2 > origmaxsize)
 		{
 			msg->cursize = rollbacksize;	//roll back
-			client->pendingentities_bits[entnum] |= logbits;	//make sure those bits get re-applied later.
+			client->pendingentities_bits[entnum] = entbits;	//make sure those bits get re-applied later.
 			break;
 		}
 		if (frame->numents == frame->maxents)
@@ -678,7 +688,7 @@ static void SVFTE_WriteEntitiesToClient(client_t *client, sizebuf_t *msg, size_t
 			frame->ents = realloc(frame->ents, sizeof(*frame->ents)*frame->maxents);
 		}
 		frame->ents[frame->numents].num = entnum;
-		frame->ents[frame->numents].bits = logbits;
+		frame->ents[frame->numents].ebits = logbits;
 		frame->ents[frame->numents].csqcbits = 0;
 		frame->numents++;
 	}
@@ -695,6 +705,201 @@ static void SVFTE_WriteEntitiesToClient(client_t *client, sizebuf_t *msg, size_t
 	dev_peakstats.packetsize = q_max(msg->cursize, dev_peakstats.packetsize);
 }
 
+/*
+SV_BuildEntityState
+copies edict state into a more compact entity_state_t with all the extension fields etc sorted out and neatened up for network precision.
+note: ignores viewmodelforclient and other client-specific stuff.
+*/
+void SV_BuildEntityState(edict_t *ent, entity_state_t *state)
+{
+	state->eflags = 0;
+	VectorCopy(ent->v.origin, state->origin);
+	VectorCopy(ent->v.angles, state->angles);
+	state->modelindex = ent->v.modelindex;
+	state->frame = ent->v.frame;
+	state->colormap = ent->v.colormap;
+	state->skin = ent->v.skin;
+	state->scale = 16;
+	state->alpha = ent->alpha;
+	state->colormod[0] = state->colormod[1] = state->colormod[2] = 32;
+	state->traileffectnum = 0;
+	state->emiteffectnum = 0;
+	state->tagentity = 0;
+	state->tagindex = 0;
+	state->effects = ent->v.effects;
+	if (!ent->v.movetype || ent->v.movetype == MOVETYPE_STEP)
+		state->eflags |= EFLAGS_STEP;
+
+	state->pmovetype = 0;
+	state->velocity[0] = state->velocity[1] = state->velocity[2] = 0;
+}
+
+byte *SV_FatPVS (vec3_t org, qmodel_t *worldmodel);
+static void SVFTE_BuildSnapshotForClient (client_t *client)
+{
+	unsigned int	e, i;
+	byte			*pvs;
+	vec3_t			org;
+	edict_t			*ent, *parent;
+	unsigned int	maxentities = client->limit_entities;
+	edict_t			*clent = client->edict;
+	unsigned char	eflags;
+	int proged = EDICT_TO_PROG(clent);
+
+	struct entity_num_state_s *ents = snapshot_entstate;
+	size_t numents = 0;
+	size_t maxents = snapshot_maxents;
+
+// find the client's PVS
+	VectorAdd (clent->v.origin, clent->v.view_ofs, org);
+	pvs = SV_FatPVS (org, sv.worldmodel);
+
+	if (maxentities > (unsigned int)sv.num_edicts)
+		maxentities = (unsigned int)sv.num_edicts;
+
+	if ((int)client->numpendingcsqcentities < maxentities)
+	{	//this is the problem with dynamic memory allocations.
+		int newmax = maxentities+64;
+		client->pendingcsqcentities_bits = realloc(client->pendingcsqcentities_bits, sizeof(*client->pendingcsqcentities_bits) * newmax);
+		memset(client->pendingcsqcentities_bits+client->numpendingcsqcentities, 0, sizeof(*client->pendingcsqcentities_bits)*(newmax-client->numpendingcsqcentities));
+		client->numpendingcsqcentities = newmax;
+	}
+	
+// send over all entities (excpet the client) that touch the pvs
+	ent = NEXT_EDICT(sv.edicts);
+	for (e=1 ; e<maxentities ; e++, ent = NEXT_EDICT(ent))
+	{
+		eflags = 0;
+		if (ent != clent)	// clent is ALLWAYS sent
+		{
+			// ignore ents without visible models
+			if ((!ent->v.modelindex || !PR_GetString(ent->v.model)[0]))
+			{
+invisible:
+				if (client->pendingcsqcentities_bits[e] /*&& !((int)GetEdictFieldEval(ent, pvsflags)->_float & PVFS_NOREMOVE)*/)
+					client->pendingcsqcentities_bits[e] |= SENDFLAG_REMOVE;
+				continue;
+			}
+
+			{
+				//attached entities should use the pvs of the parent rather than the child (because the child will typically be bugging out around '0 0 0', so won't be useful)
+				parent = ent;
+				if (parent->num_leafs)
+				{
+					// ignore if not touching a PV leaf
+					for (i=0 ; i < parent->num_leafs ; i++)
+						if (pvs[parent->leafnums[i] >> 3] & (1 << (parent->leafnums[i]&7) ))
+							break;
+
+					// ericw -- added ent->num_leafs < MAX_ENT_LEAFS condition.
+					//
+					// if ent->num_leafs == MAX_ENT_LEAFS, the ent is visible from too many leafs
+					// for us to say whether it's in the PVS, so don't try to vis cull it.
+					// this commonly happens with rotators, because they often have huge bboxes
+					// spanning the entire map, or really tall lifts, etc.
+					if (i == parent->num_leafs && parent->num_leafs < MAX_ENT_LEAFS)
+						goto invisible;		// not visible
+				}
+			}
+		}
+
+		//okay, we care about this entity.
+
+		if (client->pendingcsqcentities_bits[e])
+			client->pendingcsqcentities_bits[e] |= SENDFLAG_REMOVE;
+
+		if (numents == maxents)
+		{
+			maxents += 64;
+			ents = realloc(ents, maxents*sizeof(*ents));
+		}
+		
+		ents[numents].num = e;
+		SV_BuildEntityState(ent, &ents[numents].state);
+		if ((unsigned int)ents[numents].state.modelindex >= client->limit_models)
+			ents[numents].state.modelindex = 0;
+		if (ent == clent)	//add velocity, but we only care for the local player (should add prediction for other entities some time too).
+		{
+			ents[numents].state.pmovetype = 0;//ent->v.movetype;	//fixme: we don't do prediction, so don't tell the client that it can try
+			if ((int)ent->v.flags & FL_ONGROUND)
+				eflags |= EFLAGS_ONGROUND;
+			ents[numents].state.velocity[0] = ent->v.velocity[0]*8;
+			ents[numents].state.velocity[1] = ent->v.velocity[1]*8;
+			ents[numents].state.velocity[2] = ent->v.velocity[2]*8;
+		}
+		else if (ent->alpha == ENTALPHA_ZERO && !ent->v.effects)	//don't send invisible entities unless they have effects
+			continue;
+		//EFLAGS_VIEWMODEL was handled above
+		ents[numents].state.eflags |= eflags;
+
+		numents++;
+	}
+
+	snapshot_entstate = ents;
+	snapshot_numents = numents;
+	snapshot_maxents = maxents;
+}
+
+void MSG_WriteStaticOrBaseLine(sizebuf_t *buf, int idx, entity_state_t *state, unsigned int protocol_pext2, unsigned int protocol, unsigned int protocolflags)
+{
+	int i;
+	if (protocol_pext2 & PEXT2_REPLACEMENTDELTAS)
+	{
+		if (idx>=0)
+		{
+			MSG_WriteByte(buf, svcfte_spawnbaseline2);
+			MSG_WriteShort(buf, idx);
+		}
+		else
+			MSG_WriteByte(buf, svcfte_spawnstatic2);
+		MSGFTE_WriteEntityUpdate(MSGFTE_DeltaCalcBits(&nullentitystate, state), state, buf, protocol_pext2, protocolflags);
+	}
+	else
+	{
+		int bits = 0;
+		{
+			if (protocol == PROTOCOL_FITZQUAKE || protocol == PROTOCOL_RMQ) //still want to send baseline in PROTOCOL_NETQUAKE, so reset these values
+			{
+				if (state->modelindex & 0xFF00)
+					bits |= B_LARGEMODEL;
+				if (state->frame & 0xFF00)
+					bits |= B_LARGEFRAME;
+				if (state->alpha != ENTALPHA_DEFAULT)
+					bits |= B_ALPHA;
+			}
+			if (idx>=0)
+			{
+				MSG_WriteByte (buf, bits?svc_spawnbaseline2:svc_spawnbaseline);
+				MSG_WriteEntity (buf, idx, protocol_pext2);
+			}
+			else
+				MSG_WriteByte (buf, bits?svc_spawnstatic2:svc_spawnstatic);
+
+			if (bits)
+				MSG_WriteByte (buf, bits);
+		}
+
+		if (bits & B_LARGEMODEL)
+			MSG_WriteShort (buf, state->modelindex);
+		else
+			MSG_WriteByte (buf, state->modelindex);
+
+		if (bits & B_LARGEFRAME)
+			MSG_WriteShort (buf, state->frame);
+		else
+			MSG_WriteByte (buf, state->frame);
+
+		MSG_WriteByte (buf, state->colormap);
+		MSG_WriteByte (buf, state->skin);
+		for (i=0 ; i<3 ; i++)
+		{
+			MSG_WriteCoord(buf, state->origin[i], protocolflags);
+			MSG_WriteAngle(buf, state->angles[i], protocolflags);
+		}
+		if (bits & B_ALPHA)
+			MSG_WriteByte (buf, state->alpha);
+	}
+}
 static void SV_Pext_f(void);
 
 /*
@@ -896,19 +1101,28 @@ Larger attenuations will drop off.  (max 4 attenuation)
 
 ==================
 */
-void SV_StartSound (edict_t *entity, int channel, const char *sample, int volume, float attenuation)
+void SV_StartSound (edict_t *entity, float *origin, int channel, const char *sample, int volume, float attenuation)
 {
-	int			sound_num, ent;
+	unsigned int	sound_num, ent;
 	int			i, field_mask;
+	int			p;
+	client_t	*cl;
 
-	if (volume < 0 || volume > 255)
+	if (volume < 0)
 		Host_Error ("SV_StartSound: volume = %i", volume);
+	else if (volume > 255)
+	{
+		volume = 255;
+		Con_Printf ("SV_StartSound: volume = %i\n", volume);
+	}
 
 	if (attenuation < 0 || attenuation > 4)
 		Host_Error ("SV_StartSound: attenuation = %f", attenuation);
 
-	if (channel < 0 || channel > 7)
+	if (channel < 0 || channel > 255)
 		Host_Error ("SV_StartSound: channel = %i", channel);
+	else if (channel > 7)
+		Con_DPrintf ("SV_StartSound: channel = %i\n", channel);
 
 	if (sv.datagram.cursize > MAX_DATAGRAM-16)
 		return;
@@ -935,46 +1149,61 @@ void SV_StartSound (edict_t *entity, int channel, const char *sample, int volume
 		field_mask |= SND_ATTENUATION;
 
 	//johnfitz -- PROTOCOL_FITZQUAKE
-	if (ent >= 8192)
-	{
-		if (sv.protocol == PROTOCOL_NETQUAKE)
-			return; //don't send any info protocol can't support
-		else
-			field_mask |= SND_LARGEENTITY;
-	}
-	if (sound_num >= 256 || channel >= 8)
-	{
-		if (sv.protocol == PROTOCOL_NETQUAKE)
-			return; //don't send any info protocol can't support
-		else
-			field_mask |= SND_LARGESOUND;
-	}
+	if (ent >= 8192 || channel >= 8)
+		field_mask |= SND_LARGEENTITY;
+	if (sound_num >= 256)
+		field_mask |= SND_LARGESOUND;
 	//johnfitz
 
-// directed messages go only to the entity the are targeted on
-	MSG_WriteByte (&sv.datagram, svc_sound);
-	MSG_WriteByte (&sv.datagram, field_mask);
-	if (field_mask & SND_VOLUME)
-		MSG_WriteByte (&sv.datagram, volume);
-	if (field_mask & SND_ATTENUATION)
-		MSG_WriteByte (&sv.datagram, attenuation*64);
-
-	//johnfitz -- PROTOCOL_FITZQUAKE
-	if (field_mask & SND_LARGEENTITY)
+	for (p = 0; p < svs.maxclients; p++)
 	{
-		MSG_WriteShort (&sv.datagram, ent);
-		MSG_WriteByte (&sv.datagram, channel);
-	}
-	else
-		MSG_WriteShort (&sv.datagram, (ent<<3) | channel);
-	if (field_mask & SND_LARGESOUND)
-		MSG_WriteShort (&sv.datagram, sound_num);
-	else
-		MSG_WriteByte (&sv.datagram, sound_num);
-	//johnfitz
+		cl = &svs.clients[p];
+		if (!cl->active || !cl->spawned)
+			continue;
 
-	for (i = 0; i < 3; i++)
-		MSG_WriteCoord (&sv.datagram, entity->v.origin[i]+0.5*(entity->v.mins[i]+entity->v.maxs[i]), sv.protocolflags);
+		if (ent >= cl->limit_entities)
+			continue;
+		if (sound_num >= cl->limit_sounds)
+			continue;
+		if ((field_mask & (SND_LARGEENTITY|SND_LARGESOUND)) && (!cl->protocol_pext2 || sv.protocol == PROTOCOL_NETQUAKE))
+			continue;
+
+		// directed messages go only to the entity the are targeted on
+		MSG_WriteByte (&cl->datagram, svc_sound);
+		MSG_WriteByte (&cl->datagram, field_mask);
+		if (field_mask & SND_VOLUME)
+			MSG_WriteByte (&cl->datagram, volume);
+		if (field_mask & SND_ATTENUATION)
+			MSG_WriteByte (&cl->datagram, attenuation*64);
+
+		//johnfitz -- PROTOCOL_FITZQUAKE
+		if (field_mask & SND_LARGEENTITY)
+		{
+			if ((cl->protocol_pext2 & PEXT2_REPLACEMENTDELTAS) && ent > 0x7fff)
+			{
+				MSG_WriteShort(&cl->datagram, (ent>>8) | 0x8000);
+				MSG_WriteByte(&cl->datagram, ent & 0xff);
+			}
+			else
+				MSG_WriteShort (&cl->datagram, ent);
+			MSG_WriteByte (&cl->datagram, channel);
+		}
+		else
+			MSG_WriteShort (&cl->datagram, (ent<<3) | channel);
+		if (field_mask & SND_LARGESOUND)
+			MSG_WriteShort (&cl->datagram, sound_num);
+		else
+			MSG_WriteByte (&cl->datagram, sound_num);
+		//johnfitz
+
+		for (i = 0; i < 3; i++)
+		{
+			if (origin)
+				MSG_WriteCoord (&cl->datagram, origin[i], sv.protocolflags);
+			else
+				MSG_WriteCoord (&cl->datagram, entity->v.origin[i]+0.5*(entity->v.mins[i]+entity->v.maxs[i]), sv.protocolflags);
+		}
+	}
 }
 
 /*
@@ -997,7 +1226,19 @@ void SV_SendServerinfo (client_t *client)
 {
 	const char		**s;
 	char			message[2048];
-	int				i; //johnfitz
+	unsigned int	i; //johnfitz
+	qboolean cantruncate;
+	qboolean truncated = false;
+
+
+	client->spawned = false;		// need prespawn, spawn, etc
+
+	//assume some safe defaults if we early out.
+	client->limit_unreliable = 1024;
+	client->limit_reliable = 8192;
+	client->limit_entities = 0;
+	client->limit_models = 0;
+	client->limit_sounds = 0;
 
 	if (!sv_protocol_pext2)
 	{	//server disabled pext completely, don't bother trying.
@@ -1008,7 +1249,7 @@ void SV_SendServerinfo (client_t *client)
 	{
 		MSG_WriteByte (&client->message, svc_stufftext);
 		MSG_WriteString (&client->message, "cmd pext\n");
-		client->sendsignon = true;
+		client->sendsignon = PRESPAWN_FLUSH;
 		return;
 	}
 	client->protocol_pext2 &= sv_protocol_pext2;
@@ -1016,6 +1257,50 @@ void SV_SendServerinfo (client_t *client)
 	if (!(client->protocol_pext2 & PEXT2_REPLACEMENTDELTAS))
 		client->protocol_pext2 &= ~PEXT2_PREDINFO;	//stats can't be deltaed if there's no deltas, so just pretend its not supported on its own.
 
+	client->limit_entities = (sv_protocol_pext2&&NET_QSocketGetProQuakeAngleHack(client->netconnection))?2048:600;	//vanilla sucks. proquake supports more so assume we can use that limit if angles are also available (but only if we're allowing other non-vanilla extensions)
+	client->limit_models = 256;				//single byte
+	client->limit_sounds = 256;				//single byte
+
+	//now we know their protocol, pick some real defaults
+	if (sv.protocol != PROTOCOL_NETQUAKE || client->protocol_pext2)
+	{
+		client->limit_unreliable = DATAGRAM_MTU;//some safe ethernet limit. these clients should accept pretty much anything, but any routers will not.
+		client->limit_reliable = NET_MAXMESSAGE;	//quite large, ip allows 16 bits
+		client->limit_entities = MAX_EDICTS;	//we don't really know, 8k is probably a save guess but could be 32k, 65k, or even more...
+		client->limit_models = MAX_MODELS;		//not really sure, client's problem until >14bits
+		client->limit_sounds = MAX_SOUNDS;		//not really sure, client's problem until >14bits
+
+		if (!Q_strcmp(NET_QSocketGetTrueAddressString(client->netconnection), "LOCAL"))
+		{	//override some other limits for localhost, because we can probably get away with it.
+			//only do this if we're using extensions, so we don't break demos
+//			client->limit_unreliable = client->limit_reliable = NET_MAXMESSAGE;
+		}
+	}
+	if (client->limit_entities > 0x8000 && !(client->protocol_pext2 & PEXT2_REPLACEMENTDELTAS))
+		client->limit_entities = 0x8000;	//pext2 changes the encoding of entities to support 23 bits instead of dpp7's 15bits or vanilla's 16bits, but our writeentity is lazy.
+
+
+	//unfortunately we can't split this up, so if its oversized, we'll just let the client complain instead of always kicking them
+	client->message.maxsize = sizeof(client->msgbuf);
+	if (client->message.maxsize > (int)client->limit_reliable)
+		client->message.maxsize = client->limit_reliable;
+
+	NET_QSocketSetMSS(client->netconnection, client->limit_unreliable);
+
+	if (client->message.cursize)
+	{	//try and flush the reliable NOW, in case the qc is evil
+		if (NET_CanSendMessage (host_client->netconnection))
+		{
+			if (NET_SendMessage (host_client->netconnection, &host_client->message) != -1)
+			{
+				SZ_Clear (&host_client->message);
+				host_client->last_message = realtime;
+			}
+		}
+	}
+
+	cantruncate = client->message.cursize == 0;
+retry:
 	MSG_WriteByte (&client->message, svc_print);
 	sprintf (message, "%c\nFITZQUAKE %1.2f SERVER (%i CRC)\n", 2, FITZQUAKE_VERSION, pr_crc); //johnfitz -- include fitzquake version
 	MSG_WriteString (&client->message,message);
@@ -1052,15 +1337,18 @@ void SV_SendServerinfo (client_t *client)
 	MSG_WriteString (&client->message, PR_GetString(sv.edicts->v.message));
 
 	//johnfitz -- only send the first 256 model and sound precaches if protocol is 15
-	for (i=0,s = sv.model_precache+1 ; *s; s++,i++)
-		if (sv.protocol != PROTOCOL_NETQUAKE || i < 256)
-			MSG_WriteString (&client->message, *s);
+	for (i=1,s = sv.model_precache+1 ; *s && i < client->limit_models; s++,i++)
+		MSG_WriteString (&client->message, *s);
 	MSG_WriteByte (&client->message, 0);
+	client->signon_models = i;
 
-	for (i=0,s = sv.sound_precache+1 ; *s ; s++,i++)
-		if (sv.protocol != PROTOCOL_NETQUAKE || i < 256)
-			MSG_WriteString (&client->message, *s);
+	//Spike: if we have svc_precache then use it for sounds. this reduces the stress on the serverinfo message size.
+	if (host_client->protocol_pext2 && truncated)
+		i=1;	//we tried, it didn't fit.
+	else for (i=1, s = sv.sound_precache+1 ; *s && i < client->limit_sounds; s++,i++)
+		MSG_WriteString (&client->message, *s);
 	MSG_WriteByte (&client->message, 0);
+	client->signon_sounds = i;
 	//johnfitz
 
 // send music
@@ -1075,11 +1363,38 @@ void SV_SendServerinfo (client_t *client)
 	MSG_WriteByte (&client->message, svc_signonnum);
 	MSG_WriteByte (&client->message, 1);
 
-	client->sendsignon = true;
+	client->sendsignon = PRESPAWN_FLUSH;
 
 	SVFTE_SetupFrames(client);
 
-	client->spawned = false;		// need prespawn, spawn, etc
+	if (client->message.overflowed && client->limit_models > 64 && cantruncate)
+	{
+		if (!host_client->protocol_pext2 || truncated)
+		{	//first time around we can just drop sounds completely, filling them in later.
+			//theoretically we can do the same with models too, but we don't entirely trust clients to handle lightmaps properly when its external bmodels.
+			if (client->limit_models > client->limit_sounds || host_client->protocol_pext2)
+				client->limit_models /= 2;
+			else
+				client->limit_sounds /= 2;
+		}
+		SZ_Clear(&client->message);
+		truncated = true;
+		goto retry;
+	}
+
+	//try and flush the reliable NOW, in case the qc is evil
+	if (NET_CanSendMessage (client->netconnection))
+	{
+		if (NET_SendMessage (client->netconnection, &client->message) != -1)
+		{
+			SZ_Clear (&client->message);
+			client->last_message = realtime;
+			client->sendsignon = PRESPAWN_DONE;
+		}
+	}
+
+	if (truncated)
+		Con_Printf("Protocol limitation (serverinfo) for %s\n", NET_QSocketGetTrueAddressString(client->netconnection));
 }
 
 void SV_Pext_f(void)
@@ -1093,6 +1408,8 @@ void SV_Pext_f(void)
 			return;
 		}
 		Con_Printf ("Current Protocols:\n");
+		if (cl.protocol_pext2 & PEXT2_REPLACEMENTDELTAS)
+			Con_Printf ("  Replacement Entity Deltas\n");
 		if (cl.protocol_pext2 & PEXT2_PREDINFO)
 			Con_Printf ("  Replacement Stats ('predinfo')\n");
 		if (cl.protocol == PROTOCOL_NETQUAKE)
@@ -1184,7 +1501,7 @@ void SV_ConnectClient (int clientnum)
 	{
 	// call the progs to get default spawn parms for the new client
 		PR_ExecuteProgram (pr_global_struct->SetNewParms);
-		for (i=0 ; i<NUM_SPAWN_PARMS ; i++)
+		for (i=0 ; i<NUM_TOTAL_SPAWN_PARMS ; i++)
 			client->spawn_parms[i] = (&pr_global_struct->parm1)[i];
 	}
 
@@ -1354,12 +1671,21 @@ SV_WriteEntitiesToClient
 void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg)
 {
 	edict_t	*clent = client->edict;
-	int		e, i;
+	unsigned int		e, i, maxedict=sv.num_edicts;
 	int		bits;
 	byte	*pvs;
 	vec3_t	org;
 	float	miss;
 	edict_t	*ent;
+	eval_t	*val;
+	int maxsize = msg->maxsize;
+
+	//try to avoid sounds getting lost. flickering entities are weird, but missing sounds+particles are just eerie.
+	maxsize -= client->datagram.cursize;
+	maxsize -= sv.datagram.cursize;
+
+	if (maxedict > client->limit_entities)
+		maxedict = client->limit_entities;
 
 // find the client's PVS
 	VectorAdd (clent->v.origin, clent->v.view_ofs, org);
@@ -1367,7 +1693,7 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg)
 
 // send over all entities (excpet the client) that touch the pvs
 	ent = NEXT_EDICT(sv.edicts);
-	for (e=1 ; e<sv.num_edicts ; e++, ent = NEXT_EDICT(ent))
+	for (e=1 ; e<maxedict ; e++, ent = NEXT_EDICT(ent))
 	{
 
 		if (ent != clent)	// clent is ALLWAYS sent
@@ -1450,7 +1776,6 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg)
 		if (pr_alpha_supported)
 		{
 			// TODO: find a cleaner place to put this code
-			eval_t	*val;
 			val = GetEdictFieldValue(ent, "alpha");
 			if (val)
 				ent->alpha = ENTALPHA_ENCODE(val->_float);
@@ -1617,6 +1942,10 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 	int		i;
 	int		items;
 	eval_t	*val;
+	unsigned int		weaponmodelindex = SV_ModelIndex(PR_GetString(ent->v.weaponmodel));
+
+	if (weaponmodelindex >= client->limit_models)
+		weaponmodelindex = 0;
 
 	bits = 0;
 
@@ -1663,7 +1992,7 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 	//johnfitz -- PROTOCOL_FITZQUAKE
 	if (sv.protocol != PROTOCOL_NETQUAKE)
 	{
-		if (bits & SU_WEAPON && SV_ModelIndex(PR_GetString(ent->v.weaponmodel)) & 0xFF00) bits |= SU_WEAPON2;
+		if (bits & SU_WEAPON && weaponmodelindex & 0xFF00) bits |= SU_WEAPON2;
 		if ((int)ent->v.armorvalue & 0xFF00) bits |= SU_ARMOR2;
 		if ((int)ent->v.currentammo & 0xFF00) bits |= SU_AMMO2;
 		if ((int)ent->v.ammo_shells & 0xFF00) bits |= SU_SHELLS2;
@@ -1709,7 +2038,7 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 	if (bits & SU_ARMOR)
 		MSG_WriteByte (msg, ent->v.armorvalue);
 	if (bits & SU_WEAPON)
-		MSG_WriteByte (msg, SV_ModelIndex(PR_GetString(ent->v.weaponmodel)));
+		MSG_WriteByte (msg, weaponmodelindex);
 
 	MSG_WriteShort (msg, ent->v.health);
 	MSG_WriteByte (msg, ent->v.currentammo);
@@ -1736,7 +2065,7 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 
 	//johnfitz -- PROTOCOL_FITZQUAKE
 	if (bits & SU_WEAPON2)
-		MSG_WriteByte (msg, SV_ModelIndex(PR_GetString(ent->v.weaponmodel)) >> 8);
+		MSG_WriteByte (msg, weaponmodelindex >> 8);
 	if (bits & SU_ARMOR2)
 		MSG_WriteByte (msg, (int)ent->v.armorvalue >> 8);
 	if (bits & SU_AMMO2)
@@ -1756,6 +2085,20 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 	//johnfitz
 }
 
+
+void SV_PresendClientDatagram (client_t *client)
+{
+	if (!client->netconnection)
+		return;	//botclient
+	if (!client->spawned)
+		return;	//not ready yet.
+	if (!(client->protocol_pext2 & PEXT2_REPLACEMENTDELTAS))
+		return; //brute force networking.
+	SVFTE_BuildSnapshotForClient(client);
+	SVFTE_CalcEntityDeltas(client);
+	client->snapshotresume = 0;
+}
+
 /*
 =======================
 SV_SendClientDatagram
@@ -1763,17 +2106,20 @@ SV_SendClientDatagram
 */
 qboolean SV_SendClientDatagram (client_t *client)
 {
-	byte		buf[MAX_DATAGRAM];
+	byte		buf[MAX_DATAGRAM+1000];
 	sizebuf_t	msg;
 
-	msg.data = buf;
-	msg.maxsize = sizeof(buf);
-	msg.cursize = 0;
+	if (!client->netconnection)
+	{
+		//botclient, shouldn't be sent anything.
+		SZ_Clear(&client->datagram);
+		return true;
+	}
 
-	//johnfitz -- if client is nonlocal, use smaller max size so packets aren't fragmented
-	if (Q_strcmp(NET_QSocketGetAddressString(client->netconnection), "LOCAL") != 0)
-		msg.maxsize = DATAGRAM_MTU;
-	//johnfitz
+	msg.allowoverflow = false;
+	msg.data = buf;
+	msg.maxsize = client->limit_unreliable;
+	msg.cursize = 0;
 
 	host_client = client;
 	if (client->spawned)
@@ -1813,10 +2159,17 @@ qboolean SV_SendClientDatagram (client_t *client)
 			SV_WriteEntitiesToClient (client, &msg);
 		}
 
+	// copy the private datagram if there is space
+		if (msg.cursize + client->datagram.cursize < msg.maxsize && !client->datagram.overflowed)
+			SZ_Write(&msg, client->datagram.data, client->datagram.cursize);
+		client->datagram.overflowed = false;
+		SZ_Clear(&client->datagram);
 	// copy the server datagram if there is space
 		if (msg.cursize + sv.datagram.cursize < msg.maxsize)
 			SZ_Write (&msg, sv.datagram.data, sv.datagram.cursize);
 	}
+
+	msg.maxsize = client->limit_unreliable;
 
 // send the datagram
 	if (msg.cursize && NET_SendUnreliableMessage (client->netconnection, &msg) == -1)
@@ -1887,8 +2240,102 @@ void SV_SendNop (client_t *client)
 	MSG_WriteChar (&msg, svc_nop);
 
 	if (NET_SendUnreliableMessage (client->netconnection, &msg) == -1)
-		SV_DropClient (true);	// if the message couldn't send, kick off
+		SV_DropClient (false);	// if the message couldn't send, kick off
 	client->last_message = realtime;
+}
+
+qboolean SV_SendPrespawnModelPrecaches(void)
+{
+	return false;
+	size_t maxsize = host_client->message.maxsize;	//we can go quite large
+	int idx = host_client->signon_models;
+	if (!host_client->protocol_pext2)
+		return false;	//unsupported by this client.
+	for (;idx < host_client->limit_models;idx++)
+	{
+		if (!sv.model_precache[idx])
+			continue;
+		if (host_client->message.cursize + 4+strlen(sv.model_precache[idx]) > maxsize)
+			break;
+		MSG_WriteByte(&host_client->message, svcdp_precache);
+		MSG_WriteShort(&host_client->message, 0x0000 | idx);
+		MSG_WriteString(&host_client->message, sv.model_precache[idx]);
+	}
+	host_client->signon_models = idx;
+	return idx < host_client->limit_models;
+}
+qboolean SV_SendPrespawnSoundPrecaches(void)
+{
+	int idx = host_client->signon_sounds;
+	size_t maxsize = host_client->message.maxsize;	//we can go quite large
+	if (!host_client->protocol_pext2)
+		return false;	//unsupported by this client...
+	for (;idx < host_client->limit_sounds;idx++)
+	{
+		if (!sv.sound_precache[idx])
+			continue;
+		if (host_client->message.cursize + 4+strlen(sv.sound_precache[idx]) > maxsize)
+			break;
+		MSG_WriteByte(&host_client->message, svcdp_precache);
+		MSG_WriteShort(&host_client->message, 0x8000 | idx);
+		MSG_WriteString(&host_client->message, sv.sound_precache[idx]);
+	}
+	host_client->signon_sounds = idx;
+	return idx < host_client->limit_sounds;
+}
+int SV_SendPrespawnParticlePrecaches(int idx)
+{
+	size_t maxsize = host_client->message.maxsize;	//we can go quite large
+	if (!host_client->protocol_pext2)
+		return -1;	//unsupported by this client.
+	return -1;
+}
+int SV_SendPrespawnStatics(int idx)
+{
+	entity_state_t *svent;
+	int maxsize = host_client->message.maxsize - 128;	//we can go quite large
+
+	while (1)
+	{
+		if (idx >= sv.num_statics)
+			return -1;
+		svent = &sv.static_entities[idx];
+
+		if (host_client->message.cursize > maxsize)
+			break;
+		idx++;
+
+		if (svent->modelindex >= host_client->limit_models)
+			continue;
+		if (memcmp(&nullentitystate, svent, sizeof(nullentitystate)))
+			MSG_WriteStaticOrBaseLine(&host_client->message, -1, svent, host_client->protocol_pext2, sv.protocol, sv.protocolflags);
+	}
+	return idx;
+}
+int SV_SendAmbientSounds(int idx)
+{
+	return -1;
+}
+int SV_SendPrespawnBaselines(int idx)
+{
+	edict_t *svent;
+	int maxsize = host_client->message.maxsize - 128;	//we can go quite large
+
+	while (1)
+	{
+		if (idx >= sv.num_edicts)
+			return -1;
+		svent = EDICT_NUM(idx);
+
+		if (host_client->message.cursize > maxsize)
+			break;
+
+		if (memcmp(&nullentitystate, &svent->baseline, sizeof(nullentitystate)))
+			MSG_WriteStaticOrBaseLine(&host_client->message, idx, &svent->baseline, host_client->protocol_pext2, sv.protocol, sv.protocolflags);
+
+		idx++;
+	}
+	return idx;
 }
 
 /*
@@ -1903,6 +2350,14 @@ void SV_SendClientMessages (void)
 // update frags, names, etc
 	SV_UpdateToReliableMessages ();
 
+	for (i=0, host_client = svs.clients ; i<svs.maxclients ; i++, host_client++)
+	{
+		if (!host_client->active)
+			continue;
+
+		SV_PresendClientDatagram (host_client);	//generates client snapshots (and updates csqc pending flags)
+	}
+
 // build individual updates
 	for (i=0, host_client = svs.clients ; i<svs.maxclients ; i++, host_client++)
 	{
@@ -1911,7 +2366,7 @@ void SV_SendClientMessages (void)
 
 		if (!SV_SendClientDatagram (host_client))
 			continue;
-		else
+		if (!host_client->spawned)
 		{
 		// the player isn't totally in the game yet
 		// send small keepalive messages if too much time has passed
@@ -1924,6 +2379,68 @@ void SV_SendClientMessages (void)
 					SV_SendNop (host_client);
 				continue;	// don't send out non-signon messages
 			}
+			if (host_client->sendsignon == PRESPAWN_MODELS)
+			{
+				if (!SV_SendPrespawnModelPrecaches())
+				{
+					host_client->signonidx = 0;
+					host_client->sendsignon++;
+				}
+			}
+			if (host_client->sendsignon == PRESPAWN_SOUNDS)
+			{
+				if (!SV_SendPrespawnSoundPrecaches())
+				{
+					host_client->signonidx = 0;
+					host_client->sendsignon++;
+				}
+			}
+			if (host_client->sendsignon == PRESPAWN_PARTICLES)
+			{
+				host_client->signonidx = SV_SendPrespawnParticlePrecaches(host_client->signonidx);
+				if (host_client->signonidx < 0)
+				{
+					host_client->signonidx = 0;
+					host_client->sendsignon++;
+				}
+			}
+			if (host_client->sendsignon == PRESPAWN_BASELINES)
+			{
+				host_client->signonidx = SV_SendPrespawnBaselines(host_client->signonidx);
+				if (host_client->signonidx < 0)
+				{
+					host_client->signonidx = 0;
+					host_client->sendsignon++;
+				}
+			}
+			if (host_client->sendsignon == PRESPAWN_STATICS)
+			{
+				host_client->signonidx = SV_SendPrespawnStatics(host_client->signonidx);
+				if (host_client->signonidx < 0)
+				{
+					host_client->signonidx = 0;
+					host_client->sendsignon++;
+				}
+			}
+			if (host_client->sendsignon == PRESPAWN_AMBIENTS)
+			{
+				host_client->signonidx = SV_SendAmbientSounds(host_client->signonidx);
+				if (host_client->signonidx < 0)
+				{
+					host_client->signonidx = 0;
+					host_client->sendsignon++;
+				}
+			}
+			if (host_client->sendsignon == PRESPAWN_SIGNONMSG)
+			{
+				if (host_client->message.cursize+sv.signon.cursize+2 < host_client->message.maxsize)
+				{
+					SZ_Write (&host_client->message, sv.signon.data, sv.signon.cursize);
+					MSG_WriteByte (&host_client->message, svc_signonnum);
+					MSG_WriteByte (&host_client->message, 2);
+					host_client->sendsignon = PRESPAWN_FLUSH;
+				}
+			}
 		}
 
 		// check for an overflowed message.  Should only happen
@@ -1931,8 +2448,8 @@ void SV_SendClientMessages (void)
 		// changes level
 		if (host_client->message.overflowed)
 		{
-			SV_DropClient (true);
-			host_client->message.overflowed = false;
+			SZ_Clear(&host_client->message);
+			SV_DropClient (false);
 			continue;
 		}
 
@@ -1950,10 +2467,11 @@ void SV_SendClientMessages (void)
 			{
 				if (NET_SendMessage (host_client->netconnection
 				, &host_client->message) == -1)
-					SV_DropClient (true);	// if the message couldn't send, kick off
+					SV_DropClient (false);	// if the message couldn't send, kick off
 				SZ_Clear (&host_client->message);
 				host_client->last_message = realtime;
-				host_client->sendsignon = false;
+				if (host_client->sendsignon == PRESPAWN_FLUSH)
+					host_client->sendsignon = PRESPAWN_DONE;
 			}
 		}
 	}
@@ -2000,10 +2518,8 @@ SV_CreateBaseline
 */
 void SV_CreateBaseline (void)
 {
-	int			i;
 	edict_t		*svent;
 	int			entnum;
-	int			bits; //johnfitz -- PROTOCOL_FITZQUAKE
 
 	for (entnum = 0; entnum < sv.num_edicts ; entnum++)
 	{
@@ -2034,66 +2550,11 @@ void SV_CreateBaseline (void)
 			svent->baseline.alpha = svent->alpha; //johnfitz -- alpha support
 		}
 
-		//johnfitz -- PROTOCOL_FITZQUAKE
-		bits = 0;
-		if (sv.protocol == PROTOCOL_NETQUAKE) //still want to send baseline in PROTOCOL_NETQUAKE, so reset these values
-		{
-			if (svent->baseline.modelindex & 0xFF00)
-				svent->baseline.modelindex = 0;
-			if (svent->baseline.frame & 0xFF00)
-				svent->baseline.frame = 0;
-			svent->baseline.alpha = ENTALPHA_DEFAULT;
-		}
-		else //decide which extra data needs to be sent
-		{
-			if (svent->baseline.modelindex & 0xFF00)
-				bits |= B_LARGEMODEL;
-			if (svent->baseline.frame & 0xFF00)
-				bits |= B_LARGEFRAME;
-			if (svent->baseline.alpha != ENTALPHA_DEFAULT)
-				bits |= B_ALPHA;
-		}
-		//johnfitz
-
-	//
-	// add to the message
-	//
-		//johnfitz -- PROTOCOL_FITZQUAKE
-		if (bits)
-			MSG_WriteByte (&sv.signon, svc_spawnbaseline2);
-		else
-			MSG_WriteByte (&sv.signon, svc_spawnbaseline);
-		//johnfitz
-
-		MSG_WriteShort (&sv.signon,entnum);
-
-		//johnfitz -- PROTOCOL_FITZQUAKE
-		if (bits)
-			MSG_WriteByte (&sv.signon, bits);
-
-		if (bits & B_LARGEMODEL)
-			MSG_WriteShort (&sv.signon, svent->baseline.modelindex);
-		else
-			MSG_WriteByte (&sv.signon, svent->baseline.modelindex);
-
-		if (bits & B_LARGEFRAME)
-			MSG_WriteShort (&sv.signon, svent->baseline.frame);
-		else
-			MSG_WriteByte (&sv.signon, svent->baseline.frame);
-		//johnfitz
-
-		MSG_WriteByte (&sv.signon, svent->baseline.colormap);
-		MSG_WriteByte (&sv.signon, svent->baseline.skin);
-		for (i=0 ; i<3 ; i++)
-		{
-			MSG_WriteCoord(&sv.signon, svent->baseline.origin[i], sv.protocolflags);
-			MSG_WriteAngle(&sv.signon, svent->baseline.angles[i], sv.protocolflags);
-		}
-
-		//johnfitz -- PROTOCOL_FITZQUAKE
-		if (bits & B_ALPHA)
-			MSG_WriteByte (&sv.signon, svent->baseline.alpha);
-		//johnfitz
+		//Spike -- baselines are now generated on a per-client basis.
+		//FIXME: should merge the above with other edict->entity_state copies (updates, baselines, spawnstatics)
+		//1) this allows per-client extensions.
+		//2) this avoids pre-generating a single signon buffer, splitting it over multiple packets.
+		//   thereby allowing more than 3k or so entities
 	}
 }
 
@@ -2145,7 +2606,7 @@ void SV_SaveSpawnparms (void)
 	// call the progs to get default spawn parms for the new client
 		pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
 		PR_ExecuteProgram (pr_global_struct->SetChangeParms);
-		for (j=0 ; j<NUM_SPAWN_PARMS ; j++)
+		for (j=0 ; j<NUM_TOTAL_SPAWN_PARMS ; j++)
 			host_client->spawn_parms[j] = (&pr_global_struct->parm1)[j];
 	}
 }
@@ -2177,9 +2638,7 @@ void SV_SpawnServer (const char *server)
 // tell all connected clients that we are going to a new level
 //
 	if (sv.active)
-	{
 		SV_SendReconnect ();
-	}
 
 //
 // make cvars consistant
@@ -2208,7 +2667,10 @@ void SV_SpawnServer (const char *server)
 	{
 		// set up the protocol flags used by this server
 		// (note - these could be cvar-ised so that server admins could choose the protocol features used by their servers)
-		sv.protocolflags = PRFL_INT32COORD | PRFL_SHORTANGLE;
+		if (sv_protocol_pext2)	//spike: I don't really want to step on anyone's toes, but floats have the exact same precision as qc does.
+			sv.protocolflags = PRFL_FLOATCOORD | PRFL_SHORTANGLE;
+		else	//spike: purists might want to preserve the inprecision and just extend the range though. This matches vanilla QS. should compress a bit better too.
+			sv.protocolflags = PRFL_INT32COORD | PRFL_SHORTANGLE;
 	}
 	else sv.protocolflags = 0;
 

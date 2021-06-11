@@ -75,6 +75,10 @@ typedef struct
 
 	unsigned	protocol; //johnfitz
 	unsigned	protocolflags;
+
+	entity_state_t	*static_entities;
+	int			num_statics;
+	int			max_statics;
 } server_t;
 
 
@@ -87,8 +91,22 @@ typedef struct client_s
 	qboolean		active;				// false = client is free
 	qboolean		spawned;			// false = don't send datagrams (set when client acked the first entities)
 	qboolean		dropasap;			// has been told to go to another level
-	int				sendsignon;			// only valid before spawned
+	enum
+	{
+		PRESPAWN_DONE,
+		PRESPAWN_FLUSH=1,
+//		PRESPAWN_SERVERINFO,
+		PRESPAWN_MODELS,
+		PRESPAWN_SOUNDS,
+		PRESPAWN_PARTICLES,
+		PRESPAWN_BASELINES,
+		PRESPAWN_STATICS,
+		PRESPAWN_AMBIENTS,
+		PRESPAWN_SIGNONMSG,
+	}				sendsignon;			// only valid before spawned
 	int				signonidx;
+	unsigned int	signon_sounds;		//
+	unsigned int	signon_models;		//
 
 	double			last_message;		// reliable messages must be sent
 										// periodically
@@ -116,6 +134,12 @@ typedef struct client_s
 
 	sizebuf_t		datagram;
 	byte			datagram_buf[MAX_DATAGRAM];
+
+	unsigned int	limit_entities;		//vanilla is 600
+	unsigned int	limit_unreliable;	//max allowed size for unreliables
+	unsigned int	limit_reliable;		//max (total) size of a reliable message.
+	unsigned int	limit_models;		//
+	unsigned int	limit_sounds;		//
 	qboolean		pextknown;
 	unsigned int	protocol_pext2;
 	unsigned int	resendstatsnum[MAX_CL_STATS/32];	//the stats which need to be resent.
@@ -150,7 +174,7 @@ typedef struct client_s
 		struct
 		{
 			unsigned int num;
-			unsigned int bits;
+			unsigned int ebits;
 			unsigned int csqcbits;
 		} *ents;
 		int numents;	//doesn't contain an entry for every entity, just ones that were sent this frame. no 0 bits
@@ -222,6 +246,13 @@ typedef struct client_s
 #define	SPAWNFLAG_NOT_HARD			1024
 #define	SPAWNFLAG_NOT_DEATHMATCH	2048
 
+#define	MSG_BROADCAST		0	// unreliable to all
+#define	MSG_ONE				1	// reliable to one (msg_entity)
+#define	MSG_ALL				2	// reliable to all
+#define	MSG_INIT			3	// write to the init string
+#define	MSG_EXT_MULTICAST	4	// temporary buffer that can be splurged more reliably / with more control.
+#define	MSG_EXT_ENTITY		5	// for csqc networking. we don't actually support this. I'm just defining it for completeness.
+
 //============================================================================
 
 extern	cvar_t	teamplay;
@@ -243,13 +274,14 @@ extern	edict_t		*sv_player;
 void SV_Init (void);
 
 void SV_StartParticle (vec3_t org, vec3_t dir, int color, int count);
-void SV_StartSound (edict_t *entity, int channel, const char *sample, int volume,
-    float attenuation);
+void SV_StartSound (edict_t *entity, float *origin, int channel, 
+                    const char *sample, int volume, float attenuation);
 
 void SV_DropClient (qboolean crash);
 
-void SVFTE_DestroyFrames(client_t *client);
 void SVFTE_Ack(client_t *client, int sequence);
+void SVFTE_DestroyFrames(client_t *client);
+void SV_BuildEntityState(edict_t *ent, entity_state_t *state);
 void SV_SendClientMessages (void);
 void SV_ClearDatagram (void);
 

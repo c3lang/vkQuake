@@ -500,7 +500,7 @@ Sets client to godmode
 */
 void Host_God_f (void)
 {
-	if (cmd_source == src_command)
+	if (cmd_source != src_client)
 	{
 		Cmd_ForwardToServer ();
 		return;
@@ -545,7 +545,7 @@ Host_Notarget_f
 */
 void Host_Notarget_f (void)
 {
-	if (cmd_source == src_command)
+	if (cmd_source != src_client)
 	{
 		Cmd_ForwardToServer ();
 		return;
@@ -592,7 +592,7 @@ Host_Noclip_f
 */
 void Host_Noclip_f (void)
 {
-	if (cmd_source == src_command)
+	if (cmd_source != src_client)
 	{
 		Cmd_ForwardToServer ();
 		return;
@@ -648,7 +648,7 @@ adapted from fteqw, originally by Alex Shadowalker
 */
 void Host_SetPos_f(void)
 {
-	if (cmd_source == src_command)
+	if (cmd_source != src_client)
 	{
 		Cmd_ForwardToServer ();
 		return;
@@ -709,7 +709,7 @@ Sets client to flymode
 */
 void Host_Fly_f (void)
 {
-	if (cmd_source == src_command)
+	if (cmd_source != src_client)
 	{
 		Cmd_ForwardToServer ();
 		return;
@@ -765,7 +765,7 @@ void Host_Ping_f (void)
 	float		total;
 	client_t	*client;
 
-	if (cmd_source == src_command)
+	if (cmd_source != src_client)
 	{
 		Cmd_ForwardToServer ();
 		return;
@@ -774,7 +774,7 @@ void Host_Ping_f (void)
 	SV_ClientPrintf ("Client ping times:\n");
 	for (i = 0, client = svs.clients; i < svs.maxclients; i++, client++)
 	{
-		if (!client->active)
+		if (!client->spawned || !client->netconnection)
 			continue;
 		total = 0;
 		for (j = 0; j < NUM_PING_TIMES; j++)
@@ -1117,7 +1117,7 @@ void Host_Savegame_f (void)
 	fprintf (f, "%i\n", SAVEGAME_VERSION);
 	Host_SavegameComment (comment);
 	fprintf (f, "%s\n", comment);
-	for (i = 0; i < NUM_SPAWN_PARMS; i++)
+	for (i = 0; i < NUM_TOTAL_SPAWN_PARMS; i++)
 		fprintf (f, "%f\n", svs.clients->spawn_parms[i]);
 	fprintf (f, "%d\n", current_skill);
 	fprintf (f, "%s\n", sv.name);
@@ -1162,7 +1162,7 @@ void Host_Loadgame_f (void)
 	edict_t	*ent;
 	int	entnum;
 	int	version;
-	float	spawn_parms[NUM_SPAWN_PARMS];
+	float	spawn_parms[NUM_TOTAL_SPAWN_PARMS];
 
 	if (cmd_source != src_command)
 		return;
@@ -1211,7 +1211,7 @@ void Host_Loadgame_f (void)
 		return;
 	}
 	data = COM_ParseStringNewline (data);
-	for (i = 0; i < NUM_SPAWN_PARMS; i++)
+	for (i = 0; i < NUM_TOTAL_SPAWN_PARMS; i++)
 		data = COM_ParseFloatNewline (data, &spawn_parms[i]);
 // this silliness is so we can load 1.06 save files, which have float skill values
 	data = COM_ParseFloatNewline(data, &tfloat);
@@ -1286,7 +1286,7 @@ void Host_Loadgame_f (void)
 	free (start);
 	start = NULL;
 
-	for (i = 0; i < NUM_SPAWN_PARMS; i++)
+	for (i = 0; i < NUM_TOTAL_SPAWN_PARMS; i++)
 		svs.clients->spawn_parms[i] = spawn_parms[i];
 
 	if (cls.state != ca_dedicated)
@@ -1637,10 +1637,9 @@ void Host_PreSpawn_f (void)
 		return;
 	}
 
-	SZ_Write (&host_client->message, sv.signon.data, sv.signon.cursize);
-	MSG_WriteByte (&host_client->message, svc_signonnum);
-	MSG_WriteByte (&host_client->message, 2);
-	host_client->sendsignon = true;
+	//will start splurging out prespawn data
+	host_client->sendsignon = 2;
+	host_client->signonidx = 0;
 }
 
 /*
@@ -1683,7 +1682,7 @@ void Host_Spawn_f (void)
 		ent->v.netname = PR_SetEngineString(host_client->name);
 
 		// copy spawn parms out of the client_t
-		for (i=0 ; i< NUM_SPAWN_PARMS ; i++)
+		for (i=0 ; i< NUM_TOTAL_SPAWN_PARMS ; i++)
 			(&pr_global_struct->parm1)[i] = host_client->spawn_parms[i];
 		// call the spawn function
 		pr_global_struct->time = sv.time;

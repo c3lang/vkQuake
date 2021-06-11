@@ -26,7 +26,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "bgmusic.h"
 
-const char *svc_strings[] =
+const char *svc_strings[128] =
 {
 	"svc_bad",
 	"svc_nop",
@@ -55,7 +55,7 @@ const char *svc_strings[] =
 	"svc_damage",			// [byte] impact [byte] blood [vec3] from
 
 	"svc_spawnstatic",
-	"OBSOLETE svc_spawnbinary",
+	/*"OBSOLETE svc_spawnbinary"*/"21 svc_spawnstatic_fte",
 	"svc_spawnbaseline",
 
 	"svc_temp_entity",		// <variable>
@@ -71,8 +71,8 @@ const char *svc_strings[] =
 	"svc_sellscreen",
 	"svc_cutscene",
 //johnfitz -- new server messages
-	"35",	// 35
-	"36",	// 36
+	"svc_showpic_dp",	// 35
+	"svc_hidepic_dp",	// 36
 	"svc_skybox_fitz", // 37					// [string] skyname
 	"38", // 38
 	"39", // 39
@@ -87,6 +87,86 @@ const char *svc_strings[] =
 	"48", // 48
 	"49", // 49
 //johnfitz
+
+//spike -- particle stuff, and padded to 128 to avoid possible crashes.
+	"50 svc_downloaddata_dp", // 50
+	"51 svc_updatestatbyte", // 51
+	"52 svc_effect_dp", // 52
+	"53 svc_effect2_dp", // 53
+	"54 svc_precache", // 54	//[short] type+idx [string] name
+	"55 svc_baseline2_dp", // 55
+	"56 svc_spawnstatic2_dp", // 56
+	"57 svc_entities_dp", // 57
+	"58 svc_csqcentities", // 58
+	"59 svc_spawnstaticsound2_dp", // 59
+	"60 svc_trailparticles", // 60
+	"61 svc_pointparticles", // 61
+	"62 svc_pointparticles1", // 62
+	"63 svc_particle2_fte", // 63
+	"64 svc_particle3_fte", // 64
+	"65 svc_particle4_fte", // 65
+	"66 svc_spawnbaseline_fte", // 66
+	"67 svc_customtempent_fte", // 67
+	"68 svc_selectsplitscreen_fte", // 68
+	"69 svc_showpic_fte", // 69
+	"70 svc_hidepic_fte", // 70
+	"71 svc_movepic_fte", // 71
+	"72 svc_updatepic_fte", // 72
+	"73", // 73
+	"74", // 74
+	"75", // 75
+	"76 svc_csqcentities_fte", // 76
+	"77", // 77
+	"78 svc_updatestatstring_fte", // 78
+	"79 svc_updatestatfloat_fte", // 79
+	"80", // 80
+	"81", // 81
+	"82", // 82
+	"83 svc_cgamepacket_fte", // 83
+	"84 svc_voicechat_fte", // 84
+	"85 svc_setangledelta_fte", // 85
+	"86 svc_updateentities_fte", // 86
+	"87 svc_brushedit_fte", // 87
+	"88 svc_updateseats_fte", // 88
+	"89", // 89
+	"90", // 90
+	"91", // 91
+	"92", // 92
+	"93", // 93
+	"94", // 94
+	"95", // 95
+	"96", // 96
+	"97", // 97
+	"98", // 98
+	"99", // 99
+	"100", // 100
+	"101", // 101
+	"102", // 102
+	"103", // 103
+	"104", // 104
+	"105", // 105
+	"106", // 106
+	"107", // 107
+	"108", // 108
+	"109", // 109
+	"110", // 110
+	"111", // 111
+	"112", // 112
+	"113", // 113
+	"114", // 114
+	"115", // 115
+	"116", // 116
+	"117", // 117
+	"118", // 118
+	"119", // 119
+	"120", // 120
+	"121", // 121
+	"122", // 122
+	"123", // 123
+	"124", // 124
+	"125", // 125
+	"126", // 126
+	"127", // 127
 };
 
 qboolean warn_about_nehahra_protocol; //johnfitz
@@ -112,18 +192,17 @@ entity_t	*CL_EntityNum (int num)
 
 	if (num >= cl.num_entities)
 	{
-		if (num >= cl_max_edicts) //johnfitz -- no more MAX_EDICTS
+		if (num >= cl.max_edicts) //johnfitz -- no more MAX_EDICTS
 			Host_Error ("CL_EntityNum: %i is an invalid number",num);
 		while (cl.num_entities<=num)
 		{
-			cl_entities[cl.num_entities].baseline = nullentitystate;
-			cl_entities[cl.num_entities].colormap = vid.colormap;
-			cl_entities[cl.num_entities].lerpflags |= LERP_RESETMOVE|LERP_RESETANIM; //johnfitz
+			cl.entities[cl.num_entities].baseline = nullentitystate;
+			cl.entities[cl.num_entities].lerpflags |= LERP_RESETMOVE|LERP_RESETANIM; //johnfitz
 			cl.num_entities++;
 		}
 	}
 
-	return &cl_entities[num];
+	return &cl.entities[num];
 }
 
 static int MSG_ReadSize16 (sizebuf_t *sb)
@@ -371,8 +450,8 @@ static unsigned int CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, c
 	}
 	if (bits & UF_TAGINFO)
 	{
-		/*news->tagentity =*/ MSG_ReadEntity(cl.protocol_pext2);
-		/*news->tagindex =*/ MSG_ReadByte();
+		news->tagentity = MSG_ReadEntity(cl.protocol_pext2);
+		news->tagindex = MSG_ReadByte();
 	}
 	if (bits & UF_LIGHT)
 	{
@@ -454,17 +533,28 @@ static void CL_EntitiesDeltaed(void)
 		if (!ent->update_type)
 			continue;	//not interested in this one
 
-		if (ent->msgtime != cl.mtime[1])
-			forcelink = true;	// no previous frame to lerp from
+		if (ent->msgtime == cl.mtime[0])
+			forcelink = false;	//update got fragmented, don't dirty anything.
 		else
-			forcelink = false;
+		{
+			if (ent->msgtime != cl.mtime[1])
+				forcelink = true;	// no previous frame to lerp from
+			else
+				forcelink = false;
 
-		//johnfitz -- lerping
-		if (ent->msgtime + 0.2 < cl.mtime[0]) //more than 0.2 seconds since the last message (most entities think every 0.1 sec)
-			ent->lerpflags |= LERP_RESETANIM; //if we missed a think, we'd be lerping from the wrong frame
+			//johnfitz -- lerping
+			if (ent->msgtime + 0.2 < cl.mtime[0]) //more than 0.2 seconds since the last message (most entities think every 0.1 sec)
+				ent->lerpflags |= LERP_RESETANIM; //if we missed a think, we'd be lerping from the wrong frame
 
-		ent->msgtime = cl.mtime[0];
+			ent->msgtime = cl.mtime[0];
 
+		// shift the known values for interpolation
+			VectorCopy (ent->msg_origins[0], ent->msg_origins[1]);
+			VectorCopy (ent->msg_angles[0], ent->msg_angles[1]);
+
+			VectorCopy (ent->netstate.origin, ent->msg_origins[0]);
+			VectorCopy (ent->netstate.angles, ent->msg_angles[0]);
+		}
 		skin = ent->netstate.skin;
 		if (skin != ent->skinnum)
 		{
@@ -473,17 +563,6 @@ static void CL_EntitiesDeltaed(void)
 				R_TranslateNewPlayerSkin (newnum - 1); //johnfitz -- was R_TranslatePlayerSkin
 		}
 		ent->effects = ent->netstate.effects;
-
-	// shift the known values for interpolation
-		VectorCopy (ent->msg_origins[0], ent->msg_origins[1]);
-		VectorCopy (ent->msg_angles[0], ent->msg_angles[1]);
-
-		ent->msg_origins[0][0] = ent->netstate.origin[0];
-		ent->msg_angles[0][0] = ent->netstate.angles[0];
-		ent->msg_origins[0][1] = ent->netstate.origin[1];
-		ent->msg_angles[0][1] = ent->netstate.angles[1];
-		ent->msg_origins[0][2] = ent->netstate.origin[2];
-		ent->msg_angles[0][2] = ent->netstate.angles[2];
 
 		//johnfitz -- lerping for movetype_step entities
 		if (ent->netstate.eflags & EFLAGS_STEP)
@@ -505,7 +584,9 @@ static void CL_EntitiesDeltaed(void)
 		// or randomized
 			if (model)
 			{
-				if (model->synctype == ST_RAND)
+				if (model->synctype == ST_FRAMETIME)
+					ent->syncbase = -cl.time;
+				else if (model->synctype == ST_RAND)
 					ent->syncbase = (float)(rand()&0x7fff) / 0x7fff;
 				else
 					ent->syncbase = 0.0;
@@ -517,6 +598,8 @@ static void CL_EntitiesDeltaed(void)
 
 			ent->lerpflags |= LERP_RESETANIM; //johnfitz -- don't lerp animation across model changes
 		}
+		else if (model && model->synctype == ST_FRAMETIME && ent->frame != ent->netstate.frame)
+			ent->syncbase = -cl.time;
 		ent->frame = ent->netstate.frame;
 
 		if ( forcelink )
@@ -656,7 +739,7 @@ static void CLFTE_ParseEntitiesUpdate(void)
 CL_ParseStartSoundPacket
 ==================
 */
-void CL_ParseStartSoundPacket(void)
+static void CL_ParseStartSoundPacket(void)
 {
 	vec3_t	pos;
 	int	channel, ent;
@@ -697,6 +780,13 @@ void CL_ParseStartSoundPacket(void)
 	}
 	else if (field_mask & (SND_FTE_MOREFLAGS|SND_FTE_PITCHADJ|SND_FTE_TIMEOFS))
 		Con_Warning("Unknown meaning for sound flags\n");
+	if (cl.protocol_pext2 & PEXT2_REPLACEMENTDELTAS)
+	{
+		if (field_mask & SND_DP_PITCH)
+			MSG_ReadShort();
+	}
+	else if (field_mask & SND_DP_PITCH)
+		Con_Warning("Unknown meaning for sound flags\n");
 
 	//johnfitz -- PROTOCOL_FITZQUAKE
 	if (field_mask & SND_LARGEENTITY)
@@ -722,7 +812,7 @@ void CL_ParseStartSoundPacket(void)
 		Host_Error ("CL_ParseStartSoundPacket: %i > MAX_SOUNDS", sound_num);
 	//johnfitz
 
-	if (ent > cl_max_edicts) //johnfitz -- no more MAX_EDICTS
+	if (ent > cl.max_edicts) //johnfitz -- no more MAX_EDICTS
 		Host_Error ("CL_ParseStartSoundPacket: ent = %i", ent);
 
 	for (i = 0; i < 3; i++)
@@ -731,6 +821,7 @@ void CL_ParseStartSoundPacket(void)
 	S_StartSound (ent, channel, cl.sound_precache[sound_num], pos, volume/255.0, attenuation);
 }
 
+#if 0
 /*
 ==================
 CL_KeepaliveMessage
@@ -793,6 +884,7 @@ static void CL_KeepaliveMessage (void)
 	NET_SendMessage (cls.netcon, &cls.message);
 	SZ_Clear (&cls.message);
 }
+#endif
 
 /*
 ==================
@@ -953,19 +1045,16 @@ static void CL_ParseServerInfo (void)
 		{
 			Host_Error ("Model %s not found", model_precache[i]);
 		}
-		CL_KeepaliveMessage ();
 	}
-
 	S_BeginPrecaching ();
 	for (i = 1; i < numsounds; i++)
 	{
 		cl.sound_precache[i] = S_PrecacheSound (sound_precache[i]);
-		CL_KeepaliveMessage ();
 	}
 	S_EndPrecaching ();
 
 // local state
-	cl_entities[0].model = cl.worldmodel = cl.model_precache[1];
+	cl.entities[0].model = cl.worldmodel = cl.model_precache[1];
 
 	R_NewMap ();
 
@@ -1050,7 +1139,10 @@ static void CL_ParseUpdate (int bits)
 	//johnfitz
 
 	ent->msgtime = cl.mtime[0];
-	ent->netstate = ent->baseline;
+
+	//copy the baseline into the netstate for the rest of the code to use.
+#define netstate_start offsetof(entity_state_t, scale)
+	memcpy((char*)&ent->netstate + offsetof(entity_state_t, modelindex), (const char*)&ent->baseline + offsetof(entity_state_t, modelindex), sizeof(ent->baseline) - offsetof(entity_state_t, modelindex));
 
 	if (bits & U_MODEL)
 	{
@@ -1067,17 +1159,7 @@ static void CL_ParseUpdate (int bits)
 		ent->frame = ent->baseline.frame;
 
 	if (bits & U_COLORMAP)
-		i = MSG_ReadByte();
-	else
-		i = ent->baseline.colormap;
-	if (!i)
-		ent->colormap = vid.colormap;
-	else
-	{
-		if (i > cl.maxclients)
-			Sys_Error ("i >= cl.maxclients");
-		ent->colormap = cl.scores[i-1].translations;
-	}
+		ent->netstate.colormap = MSG_ReadByte();
 	if (bits & U_SKIN)
 		skin = MSG_ReadByte();
 	else
@@ -1142,11 +1224,15 @@ static void CL_ParseUpdate (int bits)
 		else
 			ent->alpha = ent->baseline.alpha;
 		if (bits & U_SCALE)
-			MSG_ReadByte(); // PROTOCOL_RMQ: currently ignored
+			ent->netstate.scale = MSG_ReadByte(); // PROTOCOL_RMQ
 		if (bits & U_FRAME2)
 			ent->frame = (ent->frame & 0x00FF) | (MSG_ReadByte() << 8);
 		if (bits & U_MODEL2)
+		{
 			modnum = (modnum & 0x00FF) | (MSG_ReadByte() << 8);
+			if (modnum >= MAX_MODELS)
+				Host_Error ("CL_ParseModel: bad modnum");
+		}
 		if (bits & U_LERPFINISH)
 		{
 			ent->lerpfinish = ent->msgtime + ((float)(MSG_ReadByte()) / 255);
@@ -1177,6 +1263,8 @@ static void CL_ParseUpdate (int bits)
 		else
 			ent->alpha = ent->baseline.alpha;
 	}
+	else
+		ent->alpha = ent->baseline.alpha;
 	//johnfitz
 
 	//johnfitz -- moved here from above
@@ -1222,7 +1310,18 @@ static void CL_ParseBaseline (entity_t *ent, int version) //johnfitz -- added ar
 	int	i;
 	int bits; //johnfitz
 
+	if (version == 6)
+	{
+		CLFTE_ParseBaseline(&ent->baseline);
+		return;
+	}
+
+	ent->baseline = nullentitystate;
+
 	//johnfitz -- PROTOCOL_FITZQUAKE
+	if (version == 7)
+		bits = B_LARGEMODEL|B_LARGEFRAME;	//dpp7's spawnstatic2
+	else
 	bits = (version == 2) ? MSG_ReadByte() : 0;
 	ent->baseline.modelindex = (bits & B_LARGEMODEL) ? MSG_ReadShort() : MSG_ReadByte();
 	ent->baseline.frame = (bits & B_LARGEFRAME) ? MSG_ReadShort() : MSG_ReadByte();
@@ -1241,6 +1340,8 @@ static void CL_ParseBaseline (entity_t *ent, int version) //johnfitz -- added ar
 
 
 #define CL_SetStati(stat, val) cl.statsf[stat] = (cl.stats[stat] = val)
+#define CL_SetHudStat(stat, val) if (cl.stats[stat] != val)Sbar_Changed(); CL_SetStati(stat,val)
+
 /*
 ==================
 CL_ParseClientdata
@@ -1250,7 +1351,7 @@ Server information pertaining to this client only
 */
 static void CL_ParseClientdata (void)
 {
-	int		i, j;
+	int		i;
 	int		bits; //johnfitz
 
 	bits = (unsigned short)MSG_ReadShort (); //johnfitz -- read bits here isntead of in CL_ParseServerMessage()
@@ -1262,15 +1363,17 @@ static void CL_ParseClientdata (void)
 		bits |= (MSG_ReadByte() << 24);
 	//johnfitz
 
+	bits |= SU_ITEMS;
+
 	if (bits & SU_VIEWHEIGHT)
-		cl.viewheight = MSG_ReadChar ();
+		CL_SetStati(STAT_VIEWHEIGHT, MSG_ReadChar ());
 	else
-		cl.viewheight = DEFAULT_VIEWHEIGHT;
+		CL_SetStati(STAT_VIEWHEIGHT, DEFAULT_VIEWHEIGHT);
 
 	if (bits & SU_IDEALPITCH)
-		cl.idealpitch = MSG_ReadChar ();
+		CL_SetStati(STAT_IDEALPITCH, MSG_ReadChar ());
 	else
-		cl.idealpitch = 0;
+		CL_SetStati(STAT_IDEALPITCH, 0);
 
 	VectorCopy (cl.mvelocity[0], cl.mvelocity[1]);
 	for (i = 0; i < 3; i++)
@@ -1289,6 +1392,8 @@ static void CL_ParseClientdata (void)
 	//johnfitz -- update v_punchangles
 	if (v_punchangles[0][0] != cl.punchangle[0] || v_punchangles[0][1] != cl.punchangle[1] || v_punchangles[0][2] != cl.punchangle[2])
 	{
+		v_punchangles_times[1] = v_punchangles_times[0];
+		v_punchangles_times[0] = cl.mtime[0];
 		VectorCopy (v_punchangles[0], v_punchangles[1]);
 		VectorCopy (cl.punchangle, v_punchangles[0]);
 	}
@@ -1297,109 +1402,66 @@ static void CL_ParseClientdata (void)
 	if (bits & SU_ITEMS)
 		CL_SetStati(STAT_ITEMS, MSG_ReadLong ());
 
-	if (cl.items != i)
-	{	// set flash times
-		Sbar_Changed ();
-		for (j = 0; j < 32; j++)
-			if ( (i & (1<<j)) && !(cl.items & (1<<j)))
-				cl.item_gettime[j] = cl.time;
-		cl.items = i;
-	}
-
 	cl.onground = (bits & SU_ONGROUND) != 0;
 	cl.inwater = (bits & SU_INWATER) != 0;
 
-	if (bits & SU_WEAPONFRAME)
-		cl.stats[STAT_WEAPONFRAME] = MSG_ReadByte ();
-	else
-		cl.stats[STAT_WEAPONFRAME] = 0;
-
-	if (bits & SU_ARMOR)
-		i = MSG_ReadByte ();
-	else
-		i = 0;
-	if (cl.stats[STAT_ARMOR] != i)
 	{
-		cl.stats[STAT_ARMOR] = i;
-		Sbar_Changed ();
-	}
+		unsigned short weaponframe = 0;
+		unsigned short armourval = 0;
+		unsigned short weaponmodel = 0;
+		unsigned int activeweapon;
+		short health;
+		unsigned short ammo;
+		unsigned short ammovals[4];
 
-	if (bits & SU_WEAPON)
-		i = MSG_ReadByte ();
-	else
-		i = 0;
-	if (cl.stats[STAT_WEAPON] != i)
-	{
-		cl.stats[STAT_WEAPON] = i;
-		Sbar_Changed ();
-	}
+		if (bits & SU_WEAPONFRAME)
+			weaponframe = MSG_ReadByte ();
+		if (bits & SU_ARMOR)
+			armourval = MSG_ReadByte ();
+		if (bits & SU_WEAPON)
+			weaponmodel = MSG_ReadByte ();
+		health = MSG_ReadShort ();
+		ammo = MSG_ReadByte ();
+		for (i = 0; i < 4; i++)
+			ammovals[i] = MSG_ReadByte ();
+		activeweapon = MSG_ReadByte ();
+		if (!standard_quake)
+			activeweapon = 1u<<activeweapon;
 
-	i = MSG_ReadShort ();
-	if (cl.stats[STAT_HEALTH] != i)
-	{
-		cl.stats[STAT_HEALTH] = i;
-		Sbar_Changed ();
-	}
+		//johnfitz -- PROTOCOL_FITZQUAKE
+		if (bits & SU_WEAPON2)
+			weaponmodel |= (MSG_ReadByte() << 8);
+		if (bits & SU_ARMOR2)
+			armourval |= (MSG_ReadByte() << 8);
+		if (bits & SU_AMMO2)
+			ammo |= (MSG_ReadByte() << 8);
+		if (bits & SU_SHELLS2)
+			ammovals[0] |= (MSG_ReadByte() << 8);
+		if (bits & SU_NAILS2)
+			ammovals[1] |= (MSG_ReadByte() << 8);
+		if (bits & SU_ROCKETS2)
+			ammovals[2] |= (MSG_ReadByte() << 8);
+		if (bits & SU_CELLS2)
+			ammovals[3] |= (MSG_ReadByte() << 8);
+		if (bits & SU_WEAPONFRAME2)
+			weaponframe |= (MSG_ReadByte() << 8);
+		if (bits & SU_WEAPONALPHA)
+			cl.viewent.alpha = MSG_ReadByte();
+		else
+			cl.viewent.alpha = ENTALPHA_DEFAULT;
+		//johnfitz
 
-	i = MSG_ReadByte ();
-	if (cl.stats[STAT_AMMO] != i)
-	{
-		cl.stats[STAT_AMMO] = i;
-		Sbar_Changed ();
+		CL_SetHudStat(STAT_WEAPONFRAME, weaponframe);
+		CL_SetHudStat(STAT_ARMOR, armourval);
+		CL_SetHudStat(STAT_WEAPON, weaponmodel);
+		CL_SetHudStat(STAT_ACTIVEWEAPON, activeweapon);
+		CL_SetHudStat(STAT_HEALTH, health);
+		CL_SetHudStat(STAT_AMMO, ammo);
+		CL_SetHudStat(STAT_SHELLS, ammovals[0]);
+		CL_SetHudStat(STAT_NAILS, ammovals[1]);
+		CL_SetHudStat(STAT_ROCKETS, ammovals[2]);
+		CL_SetHudStat(STAT_CELLS, ammovals[3]);
 	}
-
-	for (i = 0; i < 4; i++)
-	{
-		j = MSG_ReadByte ();
-		if (cl.stats[STAT_SHELLS+i] != j)
-		{
-			cl.stats[STAT_SHELLS+i] = j;
-			Sbar_Changed ();
-		}
-	}
-
-	i = MSG_ReadByte ();
-
-	if (standard_quake)
-	{
-		if (cl.stats[STAT_ACTIVEWEAPON] != i)
-		{
-			cl.stats[STAT_ACTIVEWEAPON] = i;
-			Sbar_Changed ();
-		}
-	}
-	else
-	{
-		if (cl.stats[STAT_ACTIVEWEAPON] != (1<<i))
-		{
-			cl.stats[STAT_ACTIVEWEAPON] = (1<<i);
-			Sbar_Changed ();
-		}
-	}
-
-	//johnfitz -- PROTOCOL_FITZQUAKE
-	if (bits & SU_WEAPON2)
-		cl.stats[STAT_WEAPON] |= (MSG_ReadByte() << 8);
-	if (bits & SU_ARMOR2)
-		cl.stats[STAT_ARMOR] |= (MSG_ReadByte() << 8);
-	if (bits & SU_AMMO2)
-		cl.stats[STAT_AMMO] |= (MSG_ReadByte() << 8);
-	if (bits & SU_SHELLS2)
-		cl.stats[STAT_SHELLS] |= (MSG_ReadByte() << 8);
-	if (bits & SU_NAILS2)
-		cl.stats[STAT_NAILS] |= (MSG_ReadByte() << 8);
-	if (bits & SU_ROCKETS2)
-		cl.stats[STAT_ROCKETS] |= (MSG_ReadByte() << 8);
-	if (bits & SU_CELLS2)
-		cl.stats[STAT_CELLS] |= (MSG_ReadByte() << 8);
-	if (bits & SU_WEAPONFRAME2)
-		cl.stats[STAT_WEAPONFRAME] |= (MSG_ReadByte() << 8);
-	if (bits & SU_WEAPONALPHA)
-		cl.viewent.alpha = MSG_ReadByte();
-	else
-		cl.viewent.alpha = ENTALPHA_DEFAULT;
-	//johnfitz
-    
 	//johnfitz -- lerping
 	//ericw -- this was done before the upper 8 bits of cl.stats[STAT_WEAPON] were filled in, breaking on large maps like zendar.bsp
 	if (cl.viewent.model != cl.model_precache[cl.stats[STAT_WEAPON]])
@@ -1416,37 +1478,9 @@ CL_NewTranslation
 */
 static void CL_NewTranslation (int slot)
 {
-	int		i, j;
-	int		top, bottom;
-	byte	*dest, *source;
-
 	if (slot > cl.maxclients)
 		Sys_Error ("CL_NewTranslation: slot > cl.maxclients");
-	dest = cl.scores[slot].translations;
-	source = vid.colormap;
-	memcpy (dest, vid.colormap, sizeof(cl.scores[slot].translations));
-	top = cl.scores[slot].colors & 0xf0;
-	bottom = (cl.scores[slot].colors &15)<<4;
 	R_TranslatePlayerSkin (slot);
-
-	for (i = 0; i < VID_GRADES; i++, dest += 256, source+=256)
-	{
-		if (top < 128)	// the artists made some backwards ranges.  sigh.
-			memcpy (dest + TOP_RANGE, source + top, 16);
-		else
-		{
-			for (j = 0; j < 16; j++)
-				dest[TOP_RANGE+j] = source[top+15-j];
-		}
-
-		if (bottom < 128)
-			memcpy (dest + BOTTOM_RANGE, source + bottom, 16);
-		else
-		{
-			for (j = 0; j < 16; j++)
-				dest[BOTTOM_RANGE+j] = source[bottom+15-j];
-		}
-	}
 }
 
 /*
@@ -1460,21 +1494,31 @@ static void CL_ParseStatic (int version) //johnfitz -- added a parameter
 	int		i;
 
 	i = cl.num_statics;
-	if (i >= MAX_STATIC_ENTITIES)
-		Host_Error ("Too many static entities");
+	if (i >= cl.max_static_entities)
+	{
+		int ec = 64;
+		entity_t **newstatics = realloc(cl.static_entities, sizeof(*newstatics) * (cl.max_static_entities+ec));
+		entity_t *newents = Hunk_Alloc(sizeof(*newents) * ec);
+		if (!newstatics || !newents)
+			Host_Error ("Too many static entities");
+		cl.static_entities = newstatics;
+		while (ec--)
+			cl.static_entities[cl.max_static_entities++] = newents++;
+	}
 
-	ent = &cl_static_entities[i];
+	ent = cl.static_entities[i];
 	cl.num_statics++;
 	CL_ParseBaseline (ent, version); //johnfitz -- added second parameter
 
 // copy it to the current state
 
 	ent->netstate = ent->baseline;
+	ent->eflags = ent->netstate.eflags; //spike -- annoying and probably not used anyway, but w/e
+
 	ent->model = cl.model_precache[ent->baseline.modelindex];
 	ent->lerpflags |= LERP_RESETANIM; //johnfitz -- lerping
 	ent->frame = ent->baseline.frame;
 
-	ent->colormap = vid.colormap;
 	ent->skinnum = ent->baseline.skin;
 	ent->effects = ent->baseline.effects;
 	ent->alpha = ent->baseline.alpha; //johnfitz -- alpha
@@ -1482,7 +1526,7 @@ static void CL_ParseStatic (int version) //johnfitz -- added a parameter
 	VectorCopy (ent->baseline.origin, ent->origin);
 	VectorCopy (ent->baseline.angles, ent->angles);
 	if (ent->model)
-	R_AddEfrags (ent);
+		R_AddEfrags (ent);
 }
 
 /*
@@ -1663,6 +1707,10 @@ void CL_ParseServerMessage (void)
 			for (i=0 ; i<3 ; i++)
 				cl.viewangles[i] = MSG_ReadAngle (cl.protocolflags);
 			break;
+		case svcfte_setangledelta:
+			for (i=0 ; i<3 ; i++)
+				cl.viewangles[i] += MSG_ReadAngle16 (cl.protocolflags);
+			break;
 
 		case svc_setview:
 			cl.viewentity = MSG_ReadShort ();
@@ -1766,7 +1814,7 @@ void CL_ParseServerMessage (void)
 			if (i == 2)
 			{
 				if (cl.num_statics > 128)
-					Con_DWarning ("%i static entities exceeds standard limit of 128 (max = %d).\n", cl.num_statics, MAX_STATIC_ENTITIES);
+					Con_DWarning ("%i static entities exceeds standard limit of 128.\n", cl.num_statics);
 				R_CheckEfrags ();
 			}
 			//johnfitz

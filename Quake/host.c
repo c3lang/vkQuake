@@ -566,7 +566,8 @@ void Host_ClearMemory (void)
 	cls.signon = 0;
 	free(sv.edicts); // ericw -- sv.edicts switched to use malloc()
 	memset (&sv, 0, sizeof(sv));
-	memset (&cl, 0, sizeof(cl));
+
+	CL_FreeState();
 }
 
 

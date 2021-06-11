@@ -325,21 +325,28 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define TE_BEAM				13
 // PGM 01/21/97
 
-typedef struct
+
+typedef struct entity_state_s
 {
 	vec3_t		origin;
 	vec3_t		angles;
 	unsigned short 	modelindex;	//johnfitz -- was int
 	unsigned short 	frame;		//johnfitz -- was int
-	unsigned char 	colormap;	//johnfitz -- was int
-	unsigned char 	skin;		//johnfitz -- was int
+	unsigned int	effects;
+	unsigned char	colormap;	//johnfitz -- was int
+	unsigned char	skin;		//johnfitz -- was int
 	unsigned char	scale;		//spike -- *16
 	unsigned char	pmovetype;	//spike
-	unsigned char	colormod[3];	//spike -- entity tints, *32
-	unsigned char	alpha;		//johnfitz -- added
+	unsigned short	traileffectnum;	//spike -- for qc-defined particle trails. typically evilly used for things that are not trails.
+	unsigned short	emiteffectnum;	//spike -- for qc-defined particle trails. typically evilly used for things that are not trails.
 	short	velocity[3];	//spike -- the player's velocity.
 	unsigned char	eflags;
-	int		effects;
+	unsigned char	tagindex;
+	unsigned short	tagentity;
+	unsigned short	pad;
+	unsigned char	colormod[3];	//spike -- entity tints, *32
+	unsigned char	alpha;		//johnfitz -- added
+	unsigned int	solidsize;	//for csqc prediction logic.
 					#define ES_SOLID_NOT 0
 					#define ES_SOLID_BSP 31
 					#define ES_SOLID_HULL1 0x80201810
@@ -367,7 +374,12 @@ typedef struct
 	float	sidemove;
 	float	upmove;
 
+	unsigned int	buttons;
+	unsigned int	impulse;
+
 	unsigned int	sequence;
+
+	int		weapon;
 } usercmd_t;
 
 #endif	/* _QUAKE_PROTOCOL_H */
