@@ -1273,7 +1273,7 @@ void SV_SendServerinfo (client_t *client)
 		if (!Q_strcmp(NET_QSocketGetTrueAddressString(client->netconnection), "LOCAL"))
 		{	//override some other limits for localhost, because we can probably get away with it.
 			//only do this if we're using extensions, so we don't break demos
-//			client->limit_unreliable = client->limit_reliable = NET_MAXMESSAGE;
+			client->limit_unreliable = client->limit_reliable = NET_MAXMESSAGE;
 		}
 	}
 	if (client->limit_entities > 0x8000 && !(client->protocol_pext2 & PEXT2_REPLACEMENTDELTAS))
