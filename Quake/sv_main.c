@@ -2223,7 +2223,7 @@ qboolean SV_SendPrespawnModelPrecaches(void)
 {
 	return false;
 	size_t maxsize = host_client->message.maxsize;	//we can go quite large
-	int idx = host_client->signon_models;
+	unsigned int idx = host_client->signon_models;
 	if (!host_client->protocol_pext2)
 		return false;	//unsupported by this client.
 	for (;idx < host_client->limit_models;idx++)
@@ -2241,7 +2241,7 @@ qboolean SV_SendPrespawnModelPrecaches(void)
 }
 qboolean SV_SendPrespawnSoundPrecaches(void)
 {
-	int idx = host_client->signon_sounds;
+	unsigned int idx = host_client->signon_sounds;
 	size_t maxsize = host_client->message.maxsize;	//we can go quite large
 	if (!host_client->protocol_pext2)
 		return false;	//unsupported by this client...
