@@ -336,11 +336,6 @@ void SVFTE_DestroyFrames(client_t *client)
 	client->pendingentities_bits = NULL;
 	client->numpendingentities = 0;
 
-	if (client->pendingcsqcentities_bits)
-		free(client->pendingcsqcentities_bits);
-	client->pendingcsqcentities_bits = NULL;
-	client->numpendingcsqcentities = 0;
-
 	while(client->numframes > 0)
 	{
 		client->numframes--;
@@ -379,10 +374,6 @@ static void SVFTE_SetupFrames(client_t *client)
 	client->pendingentities_bits = calloc(client->numpendingentities, sizeof(*client->pendingentities_bits));
 
 	client->pendingentities_bits[0] = UF_REMOVE;
-
-
-	client->numpendingcsqcentities = sv.num_edicts;
-	client->pendingcsqcentities_bits = calloc(client->numpendingcsqcentities, sizeof(*client->pendingcsqcentities_bits));
 }
 static void SVFTE_DroppedFrame(client_t *client, int sequence)
 {
@@ -402,8 +393,6 @@ static void SVFTE_DroppedFrame(client_t *client, int sequence)
 	{
 		if (frame->ents[i].ebits)
 			client->pendingentities_bits[frame->ents[i].num] |= frame->ents[i].ebits;
-		if (frame->ents[i].csqcbits)
-			client->pendingcsqcentities_bits[frame->ents[i].num] |= frame->ents[i].csqcbits;
 	}
 }
 void SVFTE_Ack(client_t *client, int sequence)
@@ -689,7 +678,6 @@ static void SVFTE_WriteEntitiesToClient(client_t *client, sizebuf_t *msg, size_t
 		}
 		frame->ents[frame->numents].num = entnum;
 		frame->ents[frame->numents].ebits = logbits;
-		frame->ents[frame->numents].csqcbits = 0;
 		frame->numents++;
 	}
 	msg->maxsize = origmaxsize;
@@ -757,14 +745,6 @@ static void SVFTE_BuildSnapshotForClient (client_t *client)
 	if (maxentities > (unsigned int)sv.num_edicts)
 		maxentities = (unsigned int)sv.num_edicts;
 
-	if ((int)client->numpendingcsqcentities < maxentities)
-	{	//this is the problem with dynamic memory allocations.
-		int newmax = maxentities+64;
-		client->pendingcsqcentities_bits = realloc(client->pendingcsqcentities_bits, sizeof(*client->pendingcsqcentities_bits) * newmax);
-		memset(client->pendingcsqcentities_bits+client->numpendingcsqcentities, 0, sizeof(*client->pendingcsqcentities_bits)*(newmax-client->numpendingcsqcentities));
-		client->numpendingcsqcentities = newmax;
-	}
-	
 // send over all entities (excpet the client) that touch the pvs
 	ent = NEXT_EDICT(sv.edicts);
 	for (e=1 ; e<maxentities ; e++, ent = NEXT_EDICT(ent))
@@ -776,8 +756,6 @@ static void SVFTE_BuildSnapshotForClient (client_t *client)
 			if ((!ent->v.modelindex || !PR_GetString(ent->v.model)[0]))
 			{
 invisible:
-				if (client->pendingcsqcentities_bits[e] /*&& !((int)GetEdictFieldEval(ent, pvsflags)->_float & PVFS_NOREMOVE)*/)
-					client->pendingcsqcentities_bits[e] |= SENDFLAG_REMOVE;
 				continue;
 			}
 
@@ -804,9 +782,6 @@ invisible:
 		}
 
 		//okay, we care about this entity.
-
-		if (client->pendingcsqcentities_bits[e])
-			client->pendingcsqcentities_bits[e] |= SENDFLAG_REMOVE;
 
 		if (numents == maxents)
 		{
