@@ -49,7 +49,7 @@ static void COM_Path_f (void);
 #define PAK0_COUNT_V091		308	/* id1/pak0.pak - v0.91/0.92, not supported */
 #define PAK0_CRC_V091		28804	/* id1/pak0.pak - v0.91/0.92, not supported */
 
-char	com_token[1024];
+
 int		com_argc;
 char	**com_argv;
 
@@ -114,33 +114,6 @@ override an explicit setting on the original command line.
 //============================================================================
 
 
-// ClearLink is used for new headnodes
-void ClearLink (link_t *l)
-{
-	l->prev = l->next = l;
-}
-
-void RemoveLink (link_t *l)
-{
-	l->next->prev = l->prev;
-	l->prev->next = l->next;
-}
-
-void InsertLinkBefore (link_t *l, link_t *before)
-{
-	l->next = before;
-	l->prev = before->prev;
-	l->prev->next = l;
-	l->next->prev = l;
-}
-
-void InsertLinkAfter (link_t *l, link_t *after)
-{
-	l->next = after->next;
-	l->prev = after;
-	l->prev->next = l;
-	l->next->prev = l;
-}
 
 /*
 ============================================================================
@@ -150,45 +123,7 @@ void InsertLinkAfter (link_t *l, link_t *after)
 ============================================================================
 */
 
-int q_strcasecmp(const char * s1, const char * s2)
-{
-	const char * p1 = s1;
-	const char * p2 = s2;
-	char c1, c2;
 
-	if (p1 == p2)
-		return 0;
-
-	do
-	{
-		c1 = q_tolower (*p1++);
-		c2 = q_tolower (*p2++);
-		if (c1 == '\0')
-			break;
-	} while (c1 == c2);
-
-	return (int)(c1 - c2);
-}
-
-int q_strncasecmp(const char *s1, const char *s2, size_t n)
-{
-	const char * p1 = s1;
-	const char * p2 = s2;
-	char c1, c2;
-
-	if (p1 == p2 || n == 0)
-		return 0;
-
-	do
-	{
-		c1 = q_tolower (*p1++);
-		c2 = q_tolower (*p2++);
-		if (c1 == '\0' || c1 != c2)
-			break;
-	} while (--n > 0);
-
-	return (int)(c1 - c2);
-}
 
 //spike -- grabbed this from fte, because its useful to me
 char *q_strcasestr(const char *haystack, const char *needle)
@@ -230,29 +165,8 @@ char *q_strcasestr(const char *haystack, const char *needle)
 	return NULL;	//didn't find it
 }
 
-char *q_strlwr (char *str)
-{
-	char	*c;
-	c = str;
-	while (*c)
-	{
-		*c = q_tolower(*c);
-		c++;
-	}
-	return str;
-}
 
-char *q_strupr (char *str)
-{
-	char	*c;
-	c = str;
-	while (*c)
-	{
-		*c = q_toupper(*c);
-		c++;
-	}
-	return str;
-}
+
 
 /* platform dependant (v)snprintf function names: */
 #if defined(_WIN32)

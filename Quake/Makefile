@@ -174,6 +174,9 @@ DEFAULT_TARGET := vkquake
 %.o:	../Shaders/Compiled/%.c
 	$(CC) $(DFLAGS) -c $(CFLAGS) $(SDL_CFLAGS) -o $@ $^
 
+%.o:	%.c3
+	~/bin/c3/c3c compile-only -O2 $^
+
 # ----------------------------------------------------------------------------
 # objects
 # ----------------------------------------------------------------------------
@@ -289,6 +292,7 @@ OBJS := strlcat.o \
 	sv_user.o \
 	world.o \
 	zone.o \
+	c3quake.o \
 	$(SYSOBJ_SYS) $(SYSOBJ_MAIN) $(SYSOBJ_RES)
 
 # ------------------------
