@@ -1,35 +1,34 @@
 module c3quake;
-import std::cinterop;
 
 struct Link
 {
-    Link *prev;
-    Link *next;
+    Link* prev;
+    Link* next;
 }
 
-char[1024] com_token @extname("com_token");
+char[1024] com_token @extern("com_token");
 
-extern func int printf(char *, ...);
+extern fn int printf(char *, ...);
 
-func void Link.clear(Link *link) @extname("ClearLink")
+fn void Link.clear(Link* link) @extern("ClearLink")
 {
     link.prev = link.next = link;
 }
 
-func void Link.remove(Link *link) @extname("RemoveLink")
+fn void Link.remove(Link* link) @extern("RemoveLink")
 {
     link.next.prev = link.prev;
     link.prev.next = link.next;
 }
 
-func void Link.insertBefore(Link *link, Link *before) @extname("InsertLinkBefore")
+fn void Link.insertBefore(Link *link, Link *before) @extern("InsertLinkBefore")
 {
     link.next = before;
     link.prev = before.prev;
     link.prev.next = link.next.prev = link;
 }
 
-func void Link.insertAfter(Link *link, Link *after) @extname("InsertLinkAfter")
+fn void Link.insertAfter(Link *link, Link *after) @extern("InsertLinkAfter")
 {
     link.next = after.next;
     link.prev = after;
@@ -37,58 +36,52 @@ func void Link.insertAfter(Link *link, Link *after) @extname("InsertLinkAfter")
     link.next.prev = link;
 }
 
-func bool is_upper(int c) @inline
+fn bool is_upper(int c) @inline
 {
 	return c >= 'A' && c <= 'Z';
 }
 
-func bool is_lower(int c) @inline
+fn bool is_lower(int c) @inline
 {
 	return c >= 'a' && c <= 'z';
 }
 
-func char to_lower(char c) @inline
+fn char to_lower(char c) @inline
 {
 	return is_upper(c) ? (c | ('a' - 'A')) : c;
 }
 
-func char to_upper(char c) @inline
+fn char to_upper(char c) @inline
 {
 	return is_lower(c) ? (c & ~(char)('a' - 'A')) : c;
 }
 
-func CInt strcasecmp(char* s1, char* s2) @extname("q_strcasecmp")
+fn CInt strcasecmp(char* s1, char* s2) @extern("q_strcasecmp")
 {
-	char* p1 = s1;
-	char* p2 = s2;
+	if (s1 == s2) return 0;
 
-	if (p1 == p2) return 0;
-
-	char c1 = void;
-	char c2 = void;
+	char c1 @noinit;
+	char c2 @noinit;
 	do
 	{
-		c1 = to_lower(*p1++);
-		c2 = to_lower(*p2++);
+		c1 = to_lower(*s1++);
+		c2 = to_lower(*s2++);
 		if (c1 == '\0') break;
 	} while (c1 == c2);
 
 	return (CInt)(c1 - c2);
 }
 
-func CInt strncasecmp(char* s1, char* s2, usize n) @extname("q_strncasecmp")
+fn CInt strncasecmp(char* s1, char* s2, usz n) @extern("q_strncasecmp")
 {
-	char* p1 = s1;
-	char* p2 = s2;
+	if (s1 == s2 || n == 0) return 0;
 
-	if (p1 == p2 || n == 0) return 0;
-
-	char c1 = void;
-	char c2 = void;
+	char c1 @noinit;
+	char c2 @noinit;
 	do
 	{
-		c1 = to_lower(*p1++);
-		c2 = to_lower(*p2++);
+		c1 = to_lower(*s1++);
+		c2 = to_lower(*s2++);
 		if (c1 == '\0' || c1 != c2) break;
 	} while (--n > 0);
 
@@ -96,7 +89,7 @@ func CInt strncasecmp(char* s1, char* s2, usize n) @extname("q_strncasecmp")
 }
 
 
-func char* str_to_lower(char* str) @extname("q_strlwr")
+fn char* str_to_lower(char* str) @extern("q_strlwr")
 {
 	char* c = str;
 	while (*c)
@@ -107,7 +100,7 @@ func char* str_to_lower(char* str) @extname("q_strlwr")
 	return str;
 }
 
-func char* str_to_upper(char* str)  @extname("q_strupr")
+fn char* str_to_upper(char* str)  @extern("q_strupr")
 {
 	char* c = str;
 	while (*c)
